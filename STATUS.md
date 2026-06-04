@@ -11,10 +11,12 @@ _Living doc for the headless bot arena. Updated as the system evolves._
   curriculum **stage 0** — agent (slot 0) vs a **stationary dummy** (slot 1),
   learning to approach + attack. Reward = damage-diff + win/loss. Checkpoints to
   `models/ppo_headless_*_steps.zip` every ~20k steps, GPU, auto-resumes.
-  **Pinned to scene 6 (Desert3) via SF_FIXED_MAP** — a consistent map is
-  essential; random maps each episode made ep_rew flatline (agent fell off
-  varied geometry). **Verified learning**: ep_rew_mean −1.5 → −0.65 in the
-  first ~12k steps, agent landing many hits on the dummy.
+  **Pinned to scene 57 (Ice11) via SF_FIXED_MAP** — a flat, enclosed map (prior
+  work's "Winter 57" melee-curriculum map). Consistency is essential AND the map
+  must be fall-safe: on scene 6 (Desert3) the agent fell off edges ~50% of
+  episodes (slot0 deaths 87 vs dummy kills 91), capping ep_rew at ~−0.5. On
+  scene 57 agent falls are ~0, so reward isn't confounded by geometry deaths.
+  **Verified learning** on scene 6: ep_rew −1.5 → −0.65; restarted fresh on 57.
 - Supervisor (`train_supervisor.sh`) + watchdog (`watchdog.sh`) keep the fleet +
   trainer alive and rotate logs. **Launch long-lived helpers with `setsid`**
   (nohup alone dies with the launching shell).
