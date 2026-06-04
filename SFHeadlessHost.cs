@@ -1995,6 +1995,7 @@ namespace SFHeadlessHost
                             FireMatchStart("SFGYM_BOT_SLOTS bootstrap");
                         }
                     }
+                    TickBotRoundRearm();
                     DriveScriptedBots();
                     // Round advance: kill detected → fire MapChange after delay.
                     if (_pendingRoundAdvanceAt > 0f && Time.realtimeSinceStartup >= _pendingRoundAdvanceAt)
@@ -3401,10 +3402,34 @@ namespace SFHeadlessHost
         private static readonly System.Random _mapRng = new System.Random();
         static Plugin()
         {
+            // Build the playable scene set. Excludes:
+            //  - 1-5  : menu / lobby scenes
+            //  - 102  : the stats / non-MP scene
+            //  - SF_EXCLUDE_MAPS : a comma list of extra scene indices to drop —
+            //           this is how you remove the LEVEL EDITOR scene (and any
+            //           other map that bugs the round logic) from the rotation
+            //           WITHOUT a recompile, e.g. SF_EXCLUDE_MAPS="7,118".
+            var excluded = new HashSet<int> { 102 };
+            try
+            {
+                string ex = System.Environment.GetEnvironmentVariable("SF_EXCLUDE_MAPS");
+                if (!string.IsNullOrEmpty(ex))
+                    foreach (var tok in ex.Split(','))
+                    {
+                        int v;
+                        if (int.TryParse(tok.Trim(), out v)) excluded.Add(v);
+                    }
+            }
+            catch { }
             var list = new List<int>();
-            // Skip 1-5 (likely menu/lobby) and 102 (stats). Range 6-124.
-            for (int i = 6; i <= 124; i++) { if (i != 102) list.Add(i); }
+            for (int i = 6; i <= 124; i++) { if (!excluded.Contains(i)) list.Add(i); }
             _allLandfallMaps = list.ToArray();
+        }
+        // Exposed so a chat command / log can show what's excluded.
+        internal static string ExcludedMapsInfo()
+        {
+            string ex = System.Environment.GetEnvironmentVariable("SF_EXCLUDE_MAPS");
+            return string.IsNullOrEmpty(ex) ? "102 (stats)" : ("102 (stats), " + ex);
         }
         // Recently-played history so we don't revisit the same map back-to-back
         // (or within the last few rounds).
@@ -3457,6 +3482,13 @@ namespace SFHeadlessHost
             _authSpawnAt = -1f;
             _nsoInventoryDone = false;
             _nsoInventoryAt = -1f;
+            // Bots are destroyed with the auth rigs below (they live in SlotToRig)
+            // and are NOT respawned by SpawnAuthoritativePlayersForAllClients
+            // (that path is per-connected-client; bots have no client). Re-arm
+            // the one-shot auto-spawn so AutoSpawnBots re-fires on the new map —
+            // the NSO-inventory block reschedules _botAutoSpawnAt each round.
+            _botAutoSpawnDone = false;
+            _botLastInFight = false;
             _mapSyncObjectsRegistered = 0;
             _oraclePreCombatReadyAt = -1f;
             _oraclePreCombatSceneIndex = -1;
@@ -4107,22 +4139,43 @@ namespace SFHeadlessHost
                 // Stock reads .localPosition (StartMapSequence). Spawn points are
                 // children of MapInfo so local != world; mirror exactly.
                 Vector3 pos = ((object)sp != null) ? sp.localPosition : new Vector3(0f, 3f, 0f);
-                if (TrySpawnPlayer(slot, pos, out string err))
+                // Wrap each slot's full spawn sequence: some scenes (LevelEditor,
+                // boss/minigame maps) lack a proper player/map setup and make
+                // TrySpawnPlayer/ConfigureBotRig throw. One bad slot must not
+                // abort the whole tick or leave Update with an uncaught NRE.
+                try
                 {
-                    Log.LogInfo($"[bot-spawn] spawned bot rig for slot {slot} at map spawnPoint[{spIdx}]={pos}.");
-                    ConfigureBotRig(slot);
-                    RegisterRigWithControllerHandler(slot);
-                    ReviveSpawnedBot(slot);
-                    MoveBotToSpawnPoint(slot, pos);
-                    spawned++;
+                    if (TrySpawnPlayer(slot, pos, out string err))
+                    {
+                        Log.LogInfo($"[bot-spawn] spawned bot rig for slot {slot} at map spawnPoint[{spIdx}]={pos}.");
+                        ConfigureBotRig(slot);
+                        RegisterRigWithControllerHandler(slot);
+                        ReviveSpawnedBot(slot);
+                        MoveBotToSpawnPoint(slot, pos);
+                        spawned++;
+                    }
+                    else
+                    {
+                        Log.LogError($"[bot-spawn] FAILED to spawn slot {slot}: {err}");
+                    }
                 }
-                else
+                catch (Exception e)
                 {
-                    Log.LogError($"[bot-spawn] FAILED to spawn slot {slot}: {err}");
+                    Log.LogWarning($"[bot-spawn] slot {slot} spawn sequence threw ({e.GetType().Name}: {e.Message}) — likely an unsupported scene.");
                 }
             }
             Log.LogInfo($"[bot-spawn] done — spawned {spawned}/{AutoSpawnBotSlots.Count} bots.");
-            _botScriptedDriveActive = (spawned > 0);
+            _botScriptedDriveActive = (spawned >= 2);
+            // Self-heal: a proper 1v1 needs 2 bots. If the current scene can't
+            // host them (bad/non-combat map), skip it by advancing the round to
+            // a different scene instead of sitting idle forever.
+            if (spawned < 2)
+            {
+                Log.LogWarning($"[bot-spawn] only {spawned} bot(s) spawned on this scene — advancing round to find a playable map.");
+                // Tear down any partial rig so the next scene starts clean.
+                try { ClearAuthoritativeRigsForRoundAdvance(); } catch { }
+                ScheduleRoundAdvanceOnDeath("bot-spawn-insufficient");
+            }
         }
 
         // 1:1 with GameManager.StartMapSequence: it calls the private MovePlayer
@@ -4210,6 +4263,55 @@ namespace SFHeadlessHost
             catch (Exception e) { Log.LogWarning($"[bot-death] threw: {e.Message}"); }
         }
 
+        private bool _botLastInFight;
+        // Re-arm bots at the start of each new round. Stock StartMapSequence
+        // (network-match path) re-runs MovePlayer on every player in
+        // controllerHandler.players when a new map loads — but for IsNetworkMatch
+        // it leaves the rigidbodies KINEMATIC (only the local-match path
+        // un-kinematics them). Our bots ARE the local players in spirit, so we
+        // restore the local-match behavior: when inFight transitions false→true
+        // (countdown finished, new round live), reactivate + un-kinematic the
+        // bot rigs so they can move and fight again. This is what makes the
+        // round loop actually repeat.
+        private void TickBotRoundRearm()
+        {
+            if (AutoSpawnBotSlots == null || AutoSpawnBotSlots.Count == 0) return;
+            bool inFight = false;
+            try
+            {
+                var gmType = AccessTools.TypeByName("GameManager");
+                if ((object)gmType != null)
+                {
+                    var f = AccessTools.Field(gmType, "inFight");
+                    if ((object)f != null) inFight = (bool)f.GetValue(null);
+                }
+            }
+            catch { return; }
+            if (inFight && !_botLastInFight)
+            {
+                // false → true: new round just went live.
+                foreach (var slot in AutoSpawnBotSlots)
+                {
+                    if (!SlotToRig.TryGetValue(slot, out var rig) || (object)rig == null) continue;
+                    try
+                    {
+                        if (!rig.activeSelf) rig.SetActive(true);
+                        int n = 0;
+                        foreach (var rb in rig.GetComponentsInChildren<Rigidbody>(true))
+                        {
+                            if ((object)rb == null) continue;
+                            rb.isKinematic = false;
+                            n++;
+                        }
+                        Log.LogInfo($"[bot-rearm] slot {slot}: new round live — reactivated + {n} rigidbodies set dynamic.");
+                    }
+                    catch (Exception e) { Log.LogWarning($"[bot-rearm] slot {slot}: {e.Message}"); }
+                }
+                _botScriptedDriveActive = true;
+            }
+            _botLastInFight = inFight;
+        }
+
         // Per-FixedUpdate bot driver: walk toward nearest other bot + periodic
         // swing, writing InputFrames into SlotInputs for InjectInputPrefix to
         // feed Movement.cs. Also runs death detection + the post-MovePlayer
@@ -4218,6 +4320,16 @@ namespace SFHeadlessHost
         {
             if (!_botScriptedDriveActive || AutoSpawnBotSlots == null || AutoSpawnBotSlots.Count == 0) return;
             _botDriveTickCounter++;
+            // Diagnostic heartbeat — fires every 180 ticks regardless of the
+            // positions early-return below, so a stalled drive is visible.
+            if (_botDriveTickCounter % 180 == 0)
+            {
+                int present = 0, active = 0;
+                foreach (var s in AutoSpawnBotSlots)
+                    if (SlotToRig.TryGetValue(s, out var r) && (object)r != null)
+                    { present++; if (r.activeInHierarchy) active++; }
+                Log.LogInfo($"[bot-hb] tick={_botDriveTickCounter} active={_botScriptedDriveActive} rigsPresent={present}/{AutoSpawnBotSlots.Count} activeInHierarchy={active}");
+            }
             DetectAndApplyDeath();
             // Post-MovePlayer kinematic flip — see _botKinematicFlipAt notes.
             if (_botKinematicFlipAt.Count > 0)
@@ -5625,25 +5737,22 @@ namespace SFHeadlessHost
             {
                 EnsureNsoSrvCache();
                 float now = Time.realtimeSinceStartup;
+                bool needRebuild = false;
                 foreach (var ent in _nsoSrvEntries)
                 {
                     var comp = ent.Comp;
-                    if ((object)comp == null) continue;
+                    if (!comp) { needRebuild = true; continue; }
                     if (ent.Weapon) continue;
 
                     ushort id = ent.Id;
-                    var p = comp.transform.position;
-                    var rb = ent.Rb;
+                    Vector3 p;
+                    try { p = comp.transform.position; }
+                    catch { needRebuild = true; continue; }
 
-                    // BOXES FIX (2nd pass): mirror the v25 forward-skip filter.
-                    // The server's own NSOs can fall through the floor on map
-                    // load (no settle phase, joints/constraints not yet
-                    // registered). Broadcasting those positions to clients
-                    // makes their local copies vanish off-screen.
+                    var rb = ent.Rb;
                     if (p.y < -30f) continue;
 
-                    bool dynamicBody = (object)rb != null && !rb.isKinematic;
-                    // Case 0: pushable crates only — every tick while dynamic (not all 90 NSOs).
+                    bool dynamicBody = rb && !rb.isKinematic;
                     if (dynamicBody && ent.Pushable)
                     {
                         _nsoLastMovedAt[id] = now;
@@ -5653,17 +5762,20 @@ namespace SFHeadlessHost
                         continue;
                     }
 
-                    // Case 1: non-kinematic w/ active motion.
-                    bool dynamicMoving = dynamicBody
-                        && (rb.velocity.sqrMagnitude > 0.0001f || rb.angularVelocity.sqrMagnitude > 0.0001f);
+                    bool dynamicMoving = false;
+                    if (dynamicBody)
+                    {
+                        try
+                        {
+                            dynamicMoving = rb.velocity.sqrMagnitude > 0.0001f
+                                || rb.angularVelocity.sqrMagnitude > 0.0001f;
+                        }
+                        catch { needRebuild = true; continue; }
+                    }
 
-                    // Case 2: position drifted since last broadcast (covers
-                    // kinematic Animator-driven moving platforms, but ALSO
-                    // catches the final-settle frame of dynamic bodies).
                     bool positionDrifted = !_nsoLastBroadcastPos.TryGetValue(id, out var lastPos)
                         || Vector3.Distance(p, lastPos) > NsoPosDeltaThreshold;
 
-                    // Case 3: recently moved (keepalive).
                     float keepAlive = ent.Pushable ? NsoCrateKeepaliveSec : NsoKeepaliveSec;
                     bool recentlyActive = _nsoLastMovedAt.TryGetValue(id, out var lastMovedAt)
                         && (now - lastMovedAt) < keepAlive;
@@ -5676,8 +5788,13 @@ namespace SFHeadlessHost
                     var e = comp.transform.eulerAngles;
                     result.Add(new NsoSnap { Id = id, X = p.x, Y = p.y, Z = p.z, RotZ = e.z });
                 }
+                if (needRebuild)
+                {
+                    RebuildNsoIndexCache();
+                    _nsoCacheLastRebuildAt = Time.realtimeSinceStartup;
+                }
             }
-            catch (Exception ex) { Log.LogWarning($"[P6.14 NSO collect] {ex.Message}"); }
+            catch (Exception ex) { Log.LogWarning($"[P6.14 NSO collect] {ex.GetType().Name}: {ex.Message}"); }
             return result;
         }
 
