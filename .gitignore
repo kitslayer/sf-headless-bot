@@ -1,0 +1,17 @@
+# Build output
+bin/
+obj/
+
+# Game/engine reference DLLs are copyrighted — never commit them.
+# Restore locally by copying from a Stick Fight install + BepInEx.
+refs/*.dll
+
+# Runtime logs
+logs/
+*.log
+
+# Editor/OS noise
+.vs/
+.idea/
+*.user
+.DS_Store
