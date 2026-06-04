@@ -11,12 +11,16 @@ _Living doc for the headless bot arena. Updated as the system evolves._
   curriculum **stage 0** — agent (slot 0) vs a **stationary dummy** (slot 1),
   learning to approach + attack. Reward = damage-diff + win/loss. Checkpoints to
   `models/ppo_headless_*_steps.zip` every ~20k steps, GPU, auto-resumes.
-  **Pinned to scene 57 (Ice11) via SF_FIXED_MAP** — a flat, enclosed map (prior
-  work's "Winter 57" melee-curriculum map). Consistency is essential AND the map
-  must be fall-safe: on scene 6 (Desert3) the agent fell off edges ~50% of
-  episodes (slot0 deaths 87 vs dummy kills 91), capping ep_rew at ~−0.5. On
-  scene 57 agent falls are ~0, so reward isn't confounded by geometry deaths.
-  **Verified learning** on scene 6: ep_rew −1.5 → −0.65; restarted fresh on 57.
+  **Pinned to scene 57 (Ice11) via SF_FIXED_MAP** for a CONSISTENT environment
+  (random maps each episode made ep_rew flatline — the agent can't learn varied
+  geometry). **Verified learning**: ep_rew −1.5 → −0.5 on scene 6, climbing on 57.
+  NOTE: no vanilla buildIndex is perfectly flat — the agent still falls off edges
+  (~50% early) which caps ep_rew negative until PPO's value fn learns edge
+  avoidance (needs ~100k–1M steps; be patient, don't churn maps). The prior
+  "Winter 57 flat map" used a different (sandbox) numbering, not vanilla 57.
+  TODO options if it stays capped: scan scenes for the flattest, or stop
+  terminating the episode on the agent's own fall (penalize without the −1
+  cliff) so the damage/win signal dominates.
 - Supervisor (`train_supervisor.sh`) + watchdog (`watchdog.sh`) keep the fleet +
   trainer alive and rotate logs. **Launch long-lived helpers with `setsid`**
   (nohup alone dies with the launching shell).
