@@ -40,6 +40,9 @@ export WINEDLLOVERRIDES="winhttp=n,b"
 export PROTON_USE_XALIA=0          # Xalia crashes without a real display
 export WINEDEBUG=-all
 export SFGYM_BOT_SLOTS="${SFGYM_BOT_SLOTS:-0,1}"
+# Slots driven by an external RL policy (setBotAction) instead of the scripted
+# driver. Empty = fully scripted self-play. Forwarded from the caller's env.
+export SFGYM_RL_SLOTS="${SFGYM_RL_SLOTS:-}"
 export SFGYM_BOT_AUTOSPAWN=false
 export SFHEADLESS_PORT=$((1337 + I))
 export SFHEADLESS_BRIDGEPORT=$((1341 + I))
