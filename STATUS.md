@@ -2,44 +2,78 @@
 
 _Living doc for the headless bot arena. Updated as the system evolves._
 
-## Current state
+## What's running right now
 
-- **Single-instance scripted self-play**: 2 bots spawn at map spawn points,
-  fight (melee), die, and the round advances to a new map — using the stock SF
-  lifecycle (no teleport/clamp hacks).
-- **Round loop**: bots are destroyed on round advance (canonical clears
-  `SlotToRig`), then re-spawned on the next map. `AutoSpawnBots` re-arms each
-  round via `_botAutoSpawnDone` reset in `ResetOracleStateForRoundAdvance`.
-- **Self-heal**: if a scene can't host 2 bots (e.g. non-combat maps), the
-  round auto-advances to find a playable one. `LevelEditor` (scene 103) is
-  hard-excluded via `SF_EXCLUDE_MAPS`.
+- **Fleet of 4 headless instances** (ports 1337–1340, bridges 1341–1344), each
+  with 2 bots. Launched with `SFGYM_RL_SLOTS=0,1` so the RL env owns both slots.
+- **Watchdog** auto-restarts any instance that dies.
+- **PPO training** (`python/train_headless_ppo.py`, pid in `logs/train.log`):
+  curriculum **stage 0** — agent (slot 0) vs a **stationary dummy** (slot 1),
+  learning to approach + attack. Reward = damage-diff + win/loss. Checkpoints to
+  `models/ppo_headless_*_steps.zip` every ~20k steps, GPU, auto-resumes.
+- Host load ~13 (4 instances) leaves headroom for the docker media stacks.
 
-## Key mechanisms (all 1:1 with stock SF where it matters)
+## Operate it
 
-| Concern | Approach |
+```bash
+cd ~/stickfight-bot/sf-headless-bot
+# Build the plugin + deploy
+dotnet build SFHeadlessHost.csproj -c Release
+cp bin/Release/SFHeadlessHost.dll ~/.steam/steam/steamapps/common/StickFightTheGame/BepInEx/plugins/
+
+# Scripted self-play fleet (2 scripted bots per instance)
+bash scripts/fleet.sh start 4          # ports 1337+i, bridges 1341+i
+bash scripts/fleet.sh status
+bash scripts/fleet.sh stop
+nohup bash scripts/watchdog.sh 4 90 0 &  # keep-alive
+
+# RL training (slot 0 = agent, slot 1 = dummy/scripted)
+SFGYM_RL_SLOTS=0,1 bash scripts/fleet.sh start 4   # free both slots for the env
+cd python && python train_headless_ppo.py --instances 4 --base-bridge 1341
+
+# Inspect a live instance
+python scripts/bridge_probe.py 1341     # ping / enriched snapshot / setBotAction
+```
+
+Tunables (env): `SFGYM_BOT_SLOTS` (default 0,1), `SFGYM_RL_SLOTS` (default empty),
+`SF_BOT_STALL_SECS` (default 30), `SF_EXCLUDE_MAPS` (default 103=LevelEditor).
+
+## Pieces
+
+| File | Role |
 |---|---|
-| Spawn position | `currentMapInfo.spawnPoints[slot].localPosition` |
-| Rig setup | `ConfigureBotRig`: `mHasControl`, `SetCollision(true)`, Standing/Fighting |
-| Health init | `GameManager.RevivePlayer(ctrl, true)` |
-| Placement | stock private `MovePlayer` coroutine via reflection |
-| Kinematic | network-match `MovePlayer` leaves rigs kinematic → we flip dynamic |
-| Death | network `Die()` throws on Steamworks → set `isDead` + drop weapon locally |
-| Round end | canonical `TickAuthRigDeathCheck` sees `isDead` → schedules advance |
+| `SFHeadlessHost.cs` | BepInEx plugin: scripted bots + RL bridge (snapshot/setBotAction) |
+| `scripts/launch_oracle.sh` | one instance; per-instance wineprefix (OUTSIDE project dir) + log |
+| `scripts/fleet.sh` | N-instance orchestrator (start/stop/status/restart) |
+| `scripts/watchdog.sh` | restart dead/stalled instances |
+| `scripts/bridge_probe.py` | validate the JSON bridge |
+| `python/sf_headless_env.py` | Gymnasium env over the bridge |
+| `python/train_headless_ppo.py` | SB3 PPO across the fleet |
 
-## Scaling
+## Bridge protocol (loopback UDP JSON, port 1341+i)
 
-- Each instance ≈ 0.7–1 GB RAM, ~1–2 cores. Host has 24 cores / 15 GB
-  (shared with docker media stacks). Target ~6 instances.
-- `scripts/fleet.sh start N` — N instances on ports 1337..1337+N-1, isolated
-  wineprefixes under `prefixes/`. `scripts/watchdog.sh` restarts crashed/stalled
-  instances.
+- `{"cmd":"snapshot"}` → `{tick,scene,inFight,round,ents:[{slot,x,y,z,vx,vy,vz,hp,alive,armed}]}`
+- `{"cmd":"setBotAction","slot":N,"mx":f,"my":f,"aimx":f,"aimy":f,"buttons":i}` (bit0=jump, bit1=fire)
+- `{"cmd":"ping"}`, `{"cmd":"loadMap","scene":N}`
 
-## TODO / roadmap
+## Hard-won gotchas (don't regress)
 
-- [ ] RL training hookup (task: wire PPO to the fleet). Plan: extend the JSON
-      bridge (port 1341+i) with `setBotAction` (write `SlotInputs[slot]`) and use
-      the existing `snapshot` command for observations. Python Gym env →
-      self-play PPO, reward = Δopp_HP − Δself_HP. No external client.
-- [ ] Curate a known-good combat-map whitelist (vs. relying on self-heal to
-      skip bad scenes) for cleaner training distribution.
-- [ ] Per-instance metrics (rounds/min, mean episode length) for monitoring.
+- **Never put wineprefixes inside the project dir** — the SDK globs their Wine
+  `mscorlib.dll` into the net46 reference set and the build dies (missing
+  IReadOnlyCollection). Prefixes live in `~/stickfight-bot/sf-bot-prefixes/`.
+- **Mono/net35 reflection**: never `Type/FieldInfo/MethodInfo != null` — no
+  `op_Inequality` overload, throws `MissingMethodException`. Use `(object)x != null`.
+- **Bridge env**: actions are fire-and-forget on a separate UDP socket; sharing
+  one socket lets setBotAction acks pollute snapshot reads.
+- **Death in network match**: `HealthHandler.Die()` broadcasts over Steamworks
+  (uninitialized headless → throws). We set `isDead` + drop weapon locally;
+  canonical `TickAuthRigDeathCheck` schedules the round advance.
+- **6 instances thrash** this 24-core host (load ~29). 4 is the sweet spot.
+
+## Roadmap
+
+- [x] 2 bots fighting, multi-round, self-healing, scaled fleet + watchdog
+- [x] RL bridge (obs + action injection) + Gym env + PPO, stage-0 training live
+- [ ] Stage 1: self-play vs frozen-policy snapshots (replace the held dummy)
+- [ ] PFSP / league play; richer obs (raycasts, weapon type, aim angle)
+- [ ] Curated combat-map whitelist for a cleaner training distribution

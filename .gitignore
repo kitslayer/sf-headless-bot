@@ -12,6 +12,15 @@ run/
 prefixes/
 *.log
 
+# Trained model checkpoints (large binaries; not source)
+models/
+*.zip
+*.pkl
+
+# Python cache
+__pycache__/
+*.pyc
+
 # Editor/OS noise
 .vs/
 .idea/
