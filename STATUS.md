@@ -41,6 +41,13 @@ levers + curriculum stages are documented below.
   Checkpoints are saved per step-count (never overwritten) in `models/`, so the
   good-policy snapshots (when ep_rew was near 0) are recoverable — pick the best
   by eval rather than trusting "latest".
+- **Concrete checkpoint guidance (observed over a 257k-step run):** ep_rew
+  PEAKED near 0 (~−0.05) around **100k–140k steps**, then DEGRADED to ~−1.2 by
+  257k as the unstable policy collapsed. So the **~120k checkpoint
+  (`ppo_headless_120000_steps.zip`) is likely the best** — eval the 100–140k
+  range with `eval_checkpoint.py` and start any retuning from there, NOT from
+  the latest (degraded) checkpoint. This degrade-after-peak is itself the
+  signal to lower LR / reduce reward variance before training further.
 - Supervisor (`train_supervisor.sh`) + watchdog (`watchdog.sh`) keep the fleet +
   trainer alive and rotate logs. **Launch long-lived helpers with `setsid`**
   (nohup alone dies with the launching shell).
