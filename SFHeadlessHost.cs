@@ -4308,9 +4308,65 @@ namespace SFHeadlessHost
                     catch (Exception e) { Log.LogWarning($"[bot-rearm] slot {slot}: {e.Message}"); }
                 }
                 _botScriptedDriveActive = true;
+                // Reset combat-stall tracking for the new round.
+                _botStallSumHp = -1f;
+                _botStallLastChangeAt = Time.realtimeSinceStartup;
             }
             _botLastInFight = inFight;
+
+            // Combat-stall timeout. The simple walk-at-target bot can't navigate
+            // every map (gaps, dividers, ledges) and may never reach the
+            // opponent → no death → the round would hang forever. If total HP
+            // across both bots hasn't changed in _botStallSecs while inFight,
+            // force a round advance so the fleet keeps cycling (acts like a
+            // comp round timer / draw).
+            if (inFight && _botScriptedDriveActive)
+            {
+                float now = Time.realtimeSinceStartup;
+                if (now - _botStallCheckAt >= 1.0f)
+                {
+                    _botStallCheckAt = now;
+                    float sumHp = 0f; int counted = 0;
+                    try
+                    {
+                        var hhType = AccessTools.TypeByName("HealthHandler");
+                        var hpF = ((object)hhType != null) ? AccessTools.Field(hhType, "health") : null;
+                        if ((object)hpF != null)
+                        {
+                            foreach (var slot in AutoSpawnBotSlots)
+                            {
+                                if (!SlotToRig.TryGetValue(slot, out var rig) || (object)rig == null) continue;
+                                var hh = rig.GetComponentInChildren(hhType);
+                                if ((object)hh == null) continue;
+                                sumHp += (float)hpF.GetValue(hh); counted++;
+                            }
+                        }
+                    }
+                    catch { counted = 0; }
+                    if (counted > 0)
+                    {
+                        if (_botStallSumHp < 0f || System.Math.Abs(sumHp - _botStallSumHp) > 0.01f)
+                        {
+                            _botStallSumHp = sumHp;
+                            _botStallLastChangeAt = now;
+                        }
+                        else if (now - _botStallLastChangeAt > _botStallSecs)
+                        {
+                            Log.LogWarning($"[bot-stall] no HP change in {_botStallSecs:0}s (sumHp={sumHp:0.#}) — forcing round advance.");
+                            _botStallLastChangeAt = now;           // debounce
+                            _botStallSumHp = -1f;
+                            ScheduleRoundAdvanceOnDeath("combat-stall-timeout");
+                        }
+                    }
+                }
+            }
         }
+        private float _botStallSumHp = -1f;
+        private float _botStallLastChangeAt;
+        private float _botStallCheckAt;
+        // Tunable via SF_BOT_STALL_SECS (default 30s). A real melee kill is well
+        // under this; only genuine "can't reach each other" stalls hit it.
+        private static float _botStallSecs = 30f;
 
         // Per-FixedUpdate bot driver: walk toward nearest other bot + periodic
         // swing, writing InputFrames into SlotInputs for InjectInputPrefix to
@@ -6883,6 +6939,8 @@ namespace SFHeadlessHost
                         AutoSpawnBotSlots.Add(botSlot);
                 }
             }
+            if (float.TryParse(Environment.GetEnvironmentVariable("SF_BOT_STALL_SECS"), out var stallSecs) && stallSecs >= 5f && stallSecs <= 300f)
+                _botStallSecs = stallSecs;
             string botSlotStr = "<none>";
             if (AutoSpawnBotSlots != null && AutoSpawnBotSlots.Count > 0)
             {
