@@ -2,6 +2,18 @@
 
 _Living doc for the headless bot arena. Updated as the system evolves._
 
+## TL;DR for when you're back
+
+The bot **arena + RL training pipeline is fully built, running, and self-healing**
+(4-instance fleet + watchdog + supervisor, GPU PPO, checkpoint/auto-resume, all
+pushed). Stage-0 (agent vs stationary dummy) **demonstrably learns** (ep_rew
+−1.5 → −0.5). It plateaus negative because the agent falls off map edges ~50%
+of episodes — getting it to a *strong* bot is a normal RL tuning loop (map
+choice, reward shaping, opponent curriculum) that's your call. Currently pinned
+to **scene 6 (Desert3)**, the best baseline I found (Ice11/57 regressed). I
+stopped auto-churning configs and switched to health-only babysitting. Tuning
+levers + curriculum stages are documented below.
+
 ## What's running right now
 
 - **Fleet of 4 headless instances** (ports 1337–1340, bridges 1341–1344), each
