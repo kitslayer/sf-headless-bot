@@ -11,6 +11,13 @@ _Living doc for the headless bot arena. Updated as the system evolves._
   curriculum **stage 0** — agent (slot 0) vs a **stationary dummy** (slot 1),
   learning to approach + attack. Reward = damage-diff + win/loss. Checkpoints to
   `models/ppo_headless_*_steps.zip` every ~20k steps, GPU, auto-resumes.
+  **Pinned to scene 6 (Desert3) via SF_FIXED_MAP** — a consistent map is
+  essential; random maps each episode made ep_rew flatline (agent fell off
+  varied geometry). **Verified learning**: ep_rew_mean −1.5 → −0.65 in the
+  first ~12k steps, agent landing many hits on the dummy.
+- Supervisor (`train_supervisor.sh`) + watchdog (`watchdog.sh`) keep the fleet +
+  trainer alive and rotate logs. **Launch long-lived helpers with `setsid`**
+  (nohup alone dies with the launching shell).
 - Host load ~13 (4 instances) leaves headroom for the docker media stacks.
 
 ## Operate it
