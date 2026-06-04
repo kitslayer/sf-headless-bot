@@ -1160,6 +1160,9 @@ namespace SFHeadlessHost
         // does NOT write their per-tick inputs (Python owns those). Empty =
         // fully scripted self-play (default).
         internal static HashSet<int> RlControlledSlots = new HashSet<int>();
+        // SF_FIXED_MAP=N pins every round-advance to scene N (consistent env for
+        // RL training). -1 = random rotation (default).
+        internal static int FixedMap = -1;
         private float _botAutoSpawnAt = -1f;
         private bool _botAutoSpawnDone;
         private float _botBootstrapFireAt = -1f;
@@ -3445,10 +3448,21 @@ namespace SFHeadlessHost
         {
             ResetDeathTrackingForNewRound();
             _roundCounter++;
-            // Pick a random scene we haven't visited in the last few rounds.
-            int nextScene = _allLandfallMaps[_mapRng.Next(_allLandfallMaps.Length)];
-            for (int attempt = 0; attempt < 8 && _recentMaps.Contains(nextScene); attempt++)
+            int nextScene;
+            if (FixedMap >= 0)
+            {
+                // Pin every round to one scene (RL training wants a CONSISTENT
+                // environment — random maps each episode make learning the
+                // map geometry / not falling off impossible). SF_FIXED_MAP=N.
+                nextScene = FixedMap;
+            }
+            else
+            {
+                // Pick a random scene we haven't visited in the last few rounds.
                 nextScene = _allLandfallMaps[_mapRng.Next(_allLandfallMaps.Length)];
+                for (int attempt = 0; attempt < 8 && _recentMaps.Contains(nextScene); attempt++)
+                    nextScene = _allLandfallMaps[_mapRng.Next(_allLandfallMaps.Length)];
+            }
             _recentMaps.Enqueue(nextScene);
             while (_recentMaps.Count > _recentMapsAvoidWindow) _recentMaps.Dequeue();
             _currentSceneIndex = nextScene;
@@ -7009,6 +7023,9 @@ namespace SFHeadlessHost
             }
             if (float.TryParse(Environment.GetEnvironmentVariable("SF_BOT_STALL_SECS"), out var stallSecs) && stallSecs >= 5f && stallSecs <= 300f)
                 _botStallSecs = stallSecs;
+            FixedMap = -1;
+            if (int.TryParse(Environment.GetEnvironmentVariable("SF_FIXED_MAP"), out var fm) && fm >= 0 && fm <= 124)
+                FixedMap = fm;
             // SFGYM_RL_SLOTS=0,1 → those slots are driven by an external RL
             // policy (setBotAction); scripted driver skips their inputs.
             RlControlledSlots = new HashSet<int>();

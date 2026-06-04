@@ -54,6 +54,9 @@ export SFHEADLESS_LOGFILE="$BOTDIR/logs/oracle${I}-plugin.log"
 # Other non-combat scenes are routed around by AutoSpawnBots' self-heal
 # (advance-round-on-spawn-fail), so we only hard-exclude the known-worst.
 export SF_EXCLUDE_MAPS="${SF_EXCLUDE_MAPS:-103}"
+# Pin all rounds to one scene for consistent RL training (empty = random).
+export SF_FIXED_MAP="${SF_FIXED_MAP:-}"
+export SF_BOT_STALL_SECS="${SF_BOT_STALL_SECS:-}"
 
 ULOG="$BOTDIR/logs/oracle${I}-unity.log"
 echo "[launch_oracle] instance=$I port=$SFHEADLESS_PORT bridge=$SFHEADLESS_BRIDGEPORT bots=$SFGYM_BOT_SLOTS pfx=$STEAM_COMPAT_DATA_PATH log=$SFHEADLESS_LOGFILE"
