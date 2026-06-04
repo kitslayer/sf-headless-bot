@@ -31,6 +31,19 @@ restart_one() {
 }
 
 while true; do
+  # Log rotation: headless SF spams a benign per-frame NullReferenceException
+  # (game-side GetComponentInChildren<Torso>() in batch mode) at ~20/s, so the
+  # per-instance + unity logs grow ~5 MB/min total. Truncate any that exceed
+  # ~150 MB so a long unattended run can't fill the disk. Truncating an
+  # append-mode-held file is safe (next write continues at the new EOF).
+  for lf in "$LOGS"/oracle*-plugin.log "$LOGS"/oracle*-unity.log "$LOGS"/oracle*-combined.log; do
+    [ -f "$lf" ] || continue
+    sz=$(stat -c %s "$lf" 2>/dev/null || echo 0)
+    if [ "$sz" -gt 157286400 ]; then
+      : > "$lf"
+      echo "[watchdog $(date '+%H:%M:%S')] truncated $lf (was $((sz/1048576))MB)"
+    fi
+  done
   for i in $(seq 0 $((N-1))); do
     pidf="$PIDDIR/oracle${i}.pid"
     plog="$LOGS/oracle${i}-plugin.log"
