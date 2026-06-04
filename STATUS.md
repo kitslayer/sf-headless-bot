@@ -33,6 +33,14 @@ levers + curriculum stages are documented below.
   TODO options if it stays capped: scan scenes for the flattest, or stop
   terminating the episode on the agent's own fall (penalize without the −1
   cliff) so the damage/win signal dominates.
+- **Observed training dynamics (134k steps, scene 6):** ep_rew_mean oscillates
+  WIDELY (−0.045 peak ↔ −1.1 troughs) instead of converging — PPO instability.
+  Likely fixes (your call): lower learning_rate (3e-4 → 1e-4), reduce reward
+  variance (smaller fall penalty than the −1 cliff, and/or VecNormalize
+  norm_reward=True), maybe larger n_steps/batch for lower-variance updates.
+  Checkpoints are saved per step-count (never overwritten) in `models/`, so the
+  good-policy snapshots (when ep_rew was near 0) are recoverable — pick the best
+  by eval rather than trusting "latest".
 - Supervisor (`train_supervisor.sh`) + watchdog (`watchdog.sh`) keep the fleet +
   trainer alive and rotate logs. **Launch long-lived helpers with `setsid`**
   (nohup alone dies with the launching shell).
