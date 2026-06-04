@@ -6,8 +6,10 @@ obj/
 # Restore locally by copying from a Stick Fight install + BepInEx.
 refs/*.dll
 
-# Runtime logs
+# Runtime logs + per-instance state
 logs/
+run/
+prefixes/
 *.log
 
 # Editor/OS noise

@@ -27,7 +27,10 @@ start_one() {
 }
 
 cmd="${1:-status}"
-N="${2:-6}"
+# Default 4: on this 24-core host, 6 instances thrash (load ~29) and starve the
+# co-resident docker media stacks. 4 runs at load ~13 with headroom. Override
+# with an explicit arg if the host is dedicated.
+N="${2:-4}"
 
 case "$cmd" in
   start)
@@ -39,13 +42,28 @@ case "$cmd" in
     echo "[fleet] start issued for $N instance(s). Use 'fleet.sh status'."
     ;;
   stop)
-    echo "[fleet] stopping all instances..."
-    pkill -9 -f "StickFight.exe" 2>/dev/null
-    pkill -9 -f "Proton - Experimental" 2>/dev/null
-    pkill -9 -f "wineserver" 2>/dev/null
-    pkill -9 -f "xvfb-run" 2>/dev/null
+    echo "[fleet] stopping watchdog, orchestrators, and all instances..."
+    # Kill the watchdog + any backgrounded fleet starts FIRST, else they
+    # respawn instances faster than we can kill them.
+    pkill -9 -f "watchdog.sh" 2>/dev/null
+    pkill -9 -f "scripts/fleet.sh start" 2>/dev/null
+    sleep 1
+    # Game processes get orphaned (reparented to init) when their proton/xvfb
+    # wrapper dies, so pattern-kill a few rounds then sweep by comm.
+    for r in 1 2 3; do
+      pkill -9 -f "StickFight" 2>/dev/null
+      pkill -9 -f "Proton - Experimental" 2>/dev/null
+      pkill -9 -f "wineserver" 2>/dev/null
+      pkill -9 -f "xvfb-run" 2>/dev/null
+      sleep 2
+      [ "$(ps -eo comm | grep -c StickFight)" -eq 0 ] && break
+    done
+    # Final sweep: kill orphans by explicit PID (pattern-kill misses PPID=1).
+    for pid in $(ps -eo pid,comm | grep -iE "StickFight|wineserver|wine64|winedevice|services.exe" | awk '{print $1}'); do
+      kill -9 "$pid" 2>/dev/null
+    done
     rm -f "$PIDDIR"/oracle*.pid
-    echo "[fleet] stopped."
+    echo "[fleet] stopped (remaining StickFight: $(ps -eo comm|grep -c StickFight))."
     ;;
   restart)
     "$0" stop; sleep 5; "$0" start "$N"

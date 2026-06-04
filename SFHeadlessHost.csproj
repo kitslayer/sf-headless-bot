@@ -8,6 +8,12 @@
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
     <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
+    <!-- Never glob anything under prefixes/ or logs/ or run/ — those hold
+         Wine prefixes (whose ancient mscorlib.dll otherwise pollutes the
+         reference set and breaks the net46 build) and runtime files.
+         Prefixes also live OUTSIDE this dir now (see launch_oracle.sh), this
+         is just belt-and-suspenders. -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);prefixes/**;logs/**;run/**</DefaultItemExcludes>
   </PropertyGroup>
 
   <ItemGroup>

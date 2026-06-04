@@ -1155,6 +1155,11 @@ namespace SFHeadlessHost
         // swings, and runs a stock-faithful death + revive cycle. See the
         // method bodies for 1:1-with-stock-SF notes.
         internal static List<int> AutoSpawnBotSlots;       // null = disabled
+        // Slots driven by an external RL policy via the setBotAction bridge
+        // command. DriveScriptedBots still spawns/revives/death-checks them but
+        // does NOT write their per-tick inputs (Python owns those). Empty =
+        // fully scripted self-play (default).
+        internal static HashSet<int> RlControlledSlots = new HashSet<int>();
         private float _botAutoSpawnAt = -1f;
         private bool _botAutoSpawnDone;
         private float _botBootstrapFireAt = -1f;
@@ -4476,6 +4481,10 @@ namespace SFHeadlessHost
                         catch { }
                         Log.LogInfo($"[bot-drive] slot{slot} me=({me.x:F1},{me.y:F1},{me.z:F1}) target_slot{targetSlot}=({target.x:F1},{target.y:F1},{target.z:F1}) dz={dz:F2} stickX={stickX:F1} swing={swing} hp={hp:F1}");
                     }
+                    // Skip RL-controlled slots: an external policy writes their
+                    // SlotInputs via setBotAction; the scripted driver must not
+                    // overwrite those each tick.
+                    if (RlControlledSlots.Contains(slot)) continue;
                     var inp = new InputFrame();
                     inp.StickX = stickX;
                     inp.StickY = 0f;
@@ -6052,6 +6061,30 @@ namespace SFHeadlessHost
             {
                 EmitStateSnapshotTo(from);
             }
+            else if (cmd == "setBotAction")
+            {
+                // RL action injection. Body: {cmd:"setBotAction", slot:N,
+                // mx:f, my:f, aimx:f, aimy:f, buttons:i}. Writes SlotInputs[slot]
+                // which InjectInputPrefix feeds to Movement.cs. Only effective
+                // for slots listed in SFGYM_RL_SLOTS (DriveScriptedBots skips
+                // writing those, so it won't fight the injected action).
+                int slot = ExtractIntField(body, "slot", -1);
+                if (slot < 0 || slot > 3)
+                {
+                    SendBridgeJson(from, "{\"reply\":\"ack\",\"cmd\":\"setBotAction\",\"ok\":false,\"err\":\"bad slot\"}");
+                }
+                else
+                {
+                    var inp = new InputFrame();
+                    inp.StickX = ExtractFloatField(body, "mx");
+                    inp.StickY = ExtractFloatField(body, "my");
+                    inp.AimX = HasField(body, "aimx") ? ExtractFloatField(body, "aimx") : inp.StickX;
+                    inp.AimY = HasField(body, "aimy") ? ExtractFloatField(body, "aimy") : 0f;
+                    inp.Buttons = ExtractIntField(body, "buttons", 0);
+                    SlotInputs[slot] = inp;
+                    SendBridgeJson(from, $"{{\"reply\":\"ack\",\"cmd\":\"setBotAction\",\"ok\":true,\"slot\":{slot}}}");
+                }
+            }
             else if (cmd == "loadMap")
             {
                 int scene = ExtractIntField(body, "scene", -1);
@@ -6236,34 +6269,69 @@ namespace SFHeadlessHost
             _bridgeTick++;
             try
             {
+                var ci = System.Globalization.CultureInfo.InvariantCulture;
+                bool inFight = false; int round = _roundCounter;
+                var gmType = AccessTools.TypeByName("GameManager");
+                if ((object)gmType != null)
+                {
+                    var f = AccessTools.Field(gmType, "inFight");
+                    if ((object)f != null) { try { inFight = (bool)f.GetValue(null); } catch { } }
+                }
                 _sb.Length = 0;
                 _sb.Append("{\"reply\":\"snapshot\",\"tick\":").Append(_bridgeTick);
                 _sb.Append(",\"scene\":\"").Append(SceneManager.GetActiveScene().name).Append("\"");
+                _sb.Append(",\"inFight\":").Append(inFight ? "true" : "false");
+                _sb.Append(",\"round\":").Append(round);
                 _sb.Append(",\"ents\":[");
 
                 // Report only the rigs we spawned — slot-keyed via SlotToRig.
                 // The root transform doesn't move under SF's physics model;
-                // the actual position is determined by the ragdoll skeleton's
-                // BodyPart Rigidbodies. Use the first BodyPart's position
-                // (typically the hip/pelvis) as the canonical position.
+                // position comes from the hip BodyPart rigidbody. We also emit
+                // the RL observation fields: hp, alive, velocity, armed.
                 bool first = true;
                 var bodyPartType = AccessTools.TypeByName("BodyPart");
+                var hhType = AccessTools.TypeByName("HealthHandler");
+                var ciType = AccessTools.TypeByName("CharacterInformation");
+                var fightingType = AccessTools.TypeByName("Fighting");
+                var hpF = ((object)hhType != null) ? AccessTools.Field(hhType, "health") : null;
+                var deadF = ((object)ciType != null) ? AccessTools.Field(ciType, "isDead") : null;
+                var weaponF = ((object)fightingType != null) ? AccessTools.Field(fightingType, "weapon") : null;
                 foreach (var kv in SlotToRig)
                 {
                     var rig = kv.Value;
                     if ((object)rig == null) continue;
                     Vector3 p = rig.transform.position;
+                    Vector3 vel = Vector3.zero;
                     if ((object)bodyPartType != null)
                     {
                         var bp = rig.GetComponentInChildren(bodyPartType) as Component;
-                        if ((object)bp != null) p = bp.transform.position;
+                        if ((object)bp != null)
+                        {
+                            p = bp.transform.position;
+                            var rb = bp.GetComponent<Rigidbody>();
+                            if ((object)rb != null) vel = rb.velocity;
+                        }
                     }
+                    float hp = -1f; bool alive = true; bool armed = false;
+                    try
+                    {
+                        if ((object)hpF != null) { var hh = rig.GetComponentInChildren(hhType); if ((object)hh != null) hp = (float)hpF.GetValue(hh); }
+                        if ((object)deadF != null) { var cinf = rig.GetComponentInChildren(ciType); if ((object)cinf != null) alive = !(bool)deadF.GetValue(cinf); }
+                        if ((object)weaponF != null) { var fg = rig.GetComponentInChildren(fightingType); if ((object)fg != null) armed = (object)weaponF.GetValue(fg) != null; }
+                    }
+                    catch { }
                     if (!first) _sb.Append(",");
                     first = false;
                     _sb.Append("{\"slot\":").Append(kv.Key);
-                    _sb.Append(",\"x\":").Append(p.x.ToString("0.000", System.Globalization.CultureInfo.InvariantCulture));
-                    _sb.Append(",\"y\":").Append(p.y.ToString("0.000", System.Globalization.CultureInfo.InvariantCulture));
-                    _sb.Append(",\"z\":").Append(p.z.ToString("0.000", System.Globalization.CultureInfo.InvariantCulture));
+                    _sb.Append(",\"x\":").Append(p.x.ToString("0.000", ci));
+                    _sb.Append(",\"y\":").Append(p.y.ToString("0.000", ci));
+                    _sb.Append(",\"z\":").Append(p.z.ToString("0.000", ci));
+                    _sb.Append(",\"vx\":").Append(vel.x.ToString("0.000", ci));
+                    _sb.Append(",\"vy\":").Append(vel.y.ToString("0.000", ci));
+                    _sb.Append(",\"vz\":").Append(vel.z.ToString("0.000", ci));
+                    _sb.Append(",\"hp\":").Append(hp.ToString("0.0", ci));
+                    _sb.Append(",\"alive\":").Append(alive ? "true" : "false");
+                    _sb.Append(",\"armed\":").Append(armed ? "true" : "false");
                     _sb.Append("}");
                 }
                 _sb.Append("]}");
@@ -6941,6 +7009,14 @@ namespace SFHeadlessHost
             }
             if (float.TryParse(Environment.GetEnvironmentVariable("SF_BOT_STALL_SECS"), out var stallSecs) && stallSecs >= 5f && stallSecs <= 300f)
                 _botStallSecs = stallSecs;
+            // SFGYM_RL_SLOTS=0,1 → those slots are driven by an external RL
+            // policy (setBotAction); scripted driver skips their inputs.
+            RlControlledSlots = new HashSet<int>();
+            string rlSlots = Environment.GetEnvironmentVariable("SFGYM_RL_SLOTS");
+            if (!string.IsNullOrEmpty(rlSlots))
+                foreach (var tok in rlSlots.Split(','))
+                    if (int.TryParse(tok.Trim(), out var rlSlot) && rlSlot >= 0 && rlSlot <= 3)
+                        RlControlledSlots.Add(rlSlot);
             string botSlotStr = "<none>";
             if (AutoSpawnBotSlots != null && AutoSpawnBotSlots.Count > 0)
             {

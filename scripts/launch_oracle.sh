@@ -16,14 +16,17 @@ GAME="$STEAM/steamapps/common/StickFightTheGame"
 PROTON="$STEAM/steamapps/common/Proton - Experimental/proton"
 BOTDIR="$HOME/stickfight-bot/sf-headless-bot"
 MAIN_PFX="$STEAM/steamapps/compatdata/674940"
+# Per-instance wineprefixes live OUTSIDE the project dir — their Wine
+# mscorlib.dll otherwise pollutes the .NET build's reference set.
+PFX_BASE="$HOME/stickfight-bot/sf-bot-prefixes"
 
-mkdir -p "$BOTDIR/logs" "$BOTDIR/prefixes"
+mkdir -p "$BOTDIR/logs" "$PFX_BASE"
 
 export STEAM_COMPAT_CLIENT_INSTALL_PATH="$STEAM"
 if [ "$I" -eq 0 ]; then
   export STEAM_COMPAT_DATA_PATH="$MAIN_PFX"
 else
-  PFX="$BOTDIR/prefixes/$I"
+  PFX="$PFX_BASE/$I"
   # Clone the (already-initialized + activated) main prefix on first use so
   # we don't pay Proton's slow first-run setup per instance.
   if [ ! -d "$PFX/pfx" ]; then
