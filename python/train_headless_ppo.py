@@ -29,10 +29,10 @@ MODELS = os.path.join(HERE, "..", "models")
 LOGS = os.path.join(HERE, "..", "logs", "tb")
 
 
-def make_env(bridge_port: int):
+def make_env(bridge_port: int, opp_mode: str = "hold"):
     def _thunk():
         return SFHeadlessEnv(bridge_port=bridge_port, my_slot=0, opp_slot=1,
-                             poll_hz=20.0, max_steps=600)
+                             poll_hz=20.0, max_steps=600, opp_mode=opp_mode)
     return _thunk
 
 
@@ -50,14 +50,17 @@ def main():
     ap.add_argument("--base-bridge", type=int, default=1341)
     ap.add_argument("--steps", type=int, default=5_000_000)
     ap.add_argument("--save-every", type=int, default=20_000)
+    ap.add_argument("--opp-mode", choices=["hold", "scripted"], default="hold",
+                    help="hold = stationary dummy (stage 0, needs SFGYM_RL_SLOTS=0,1); "
+                         "scripted = in-plugin scripted opponent (stage 1, SFGYM_RL_SLOTS=0)")
     args = ap.parse_args()
 
     os.makedirs(MODELS, exist_ok=True)
     os.makedirs(LOGS, exist_ok=True)
 
     ports = [args.base_bridge + i for i in range(args.instances)]
-    print(f"[train] envs on bridge ports {ports}")
-    venv = SubprocVecEnv([make_env(p) for p in ports])
+    print(f"[train] envs on bridge ports {ports} opp_mode={args.opp_mode}")
+    venv = SubprocVecEnv([make_env(p, args.opp_mode) for p in ports])
     venv = VecMonitor(venv)
     venv = VecNormalize(venv, norm_obs=True, norm_reward=False, clip_obs=50.0)
 
