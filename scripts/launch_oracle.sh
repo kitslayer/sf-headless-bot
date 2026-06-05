@@ -22,6 +22,12 @@ PFX_BASE="$HOME/stickfight-bot/sf-bot-prefixes"
 
 mkdir -p "$BOTDIR/logs" "$PFX_BASE"
 
+# Persisted fleet config — so watchdog/supervisor relaunches use the SAME
+# SF_FIXED_MAP / SFGYM_RL_SLOTS / SFGYM_BOT_SLOTS as the original start. Without
+# this, a restarted instance defaults to random maps + scripted, diverging from
+# the training run and hitting hang-prone scenes (root cause of instance flapping).
+[ -f "$BOTDIR/run/fleet.env" ] && . "$BOTDIR/run/fleet.env"
+
 export STEAM_COMPAT_CLIENT_INSTALL_PATH="$STEAM"
 if [ "$I" -eq 0 ]; then
   export STEAM_COMPAT_DATA_PATH="$MAIN_PFX"
