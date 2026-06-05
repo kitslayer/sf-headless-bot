@@ -22,6 +22,7 @@ echo "[watchdog] N=$N check=${CHECK}s stall=${STALL}s started $(date)"
 # instance has had time to boot after a (re)start, so we don't kill a booting
 # instance whose bridge isn't up yet.
 declare -A GRACE
+declare -A PINGFAIL   # consecutive bridge-ping failures per instance
 BOOT_GRACE=150
 # Give every instance an initial grace window — on watchdog (re)start the fleet
 # may still be booting; don't ping-kill instances whose bridge isn't up yet.
@@ -82,10 +83,19 @@ while true; do
     bport=$((1341 + i))
     grace_until=${GRACE[$i]:-0}
     if [ "$(date +%s)" -ge "$grace_until" ]; then
-      if ! ping_bridge "$bport"; then
-        sleep 2
-        if ! ping_bridge "$bport"; then
-          restart_one "$i" "bridge $bport unresponsive (hung)"; sleep 8; continue
+      if ping_bridge "$bport" || { sleep 2; ping_bridge "$bport"; }; then
+        PINGFAIL[$i]=0   # responsive — clear strike count
+      else
+        PINGFAIL[$i]=$(( ${PINGFAIL[$i]:-0} + 1 ))
+        # Require unresponsiveness across TWO consecutive cycles (~CHECK secs
+        # apart) before restarting. A round-advance scene-load can block the
+        # bridge for a few seconds (one check), but a real hang persists across
+        # checks — this avoids false-restarting healthy-but-busy instances.
+        if [ "${PINGFAIL[$i]}" -ge 2 ]; then
+          PINGFAIL[$i]=0
+          restart_one "$i" "bridge $bport unresponsive 2 cycles (hung)"; sleep 8; continue
+        else
+          echo "[watchdog $(date '+%H:%M:%S')] inst $i bridge $bport no-reply (strike ${PINGFAIL[$i]}/2) — watching"
         fi
       fi
     fi
