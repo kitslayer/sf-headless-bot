@@ -17,6 +17,7 @@ reproducible and you can pick up tuning without re-deriving it.
 | ~1.22M| +0.61 | **highest swing so far** |
 | 1.26M+| oscillating −1.5 ↔ +0.6 | never holds positive |
 | 1.31M | oscillating, peaks still ~0 to +0.6 | stable run, 65 checkpoints |
+| 1.37M | oscillating −1.2 ↔ −0.05 | 68 checkpoints; watchdog auto-recovered 5 batchmode hangs, all clean |
 
 **Key finding:** the policy **oscillates** rather than converging — it reaches
 progressively higher positive peaks (+0.08 → +0.61 over ~1.1M steps, so the
