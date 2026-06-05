@@ -35,6 +35,18 @@ N="${2:-4}"
 case "$cmd" in
   start)
     echo "[fleet] starting $N instance(s)..."
+    # Persist this start's config so watchdog/supervisor relaunches match it
+    # (otherwise a restarted instance defaults to random maps + scripted —
+    # diverges from the run and hits hang-prone scenes). launch_oracle.sh
+    # sources this file on every (re)launch.
+    cat > "$PIDDIR/fleet.env" <<EOF
+export SFGYM_BOT_SLOTS=${SFGYM_BOT_SLOTS:-0,1}
+export SFGYM_RL_SLOTS=${SFGYM_RL_SLOTS:-}
+export SF_FIXED_MAP=${SF_FIXED_MAP:-}
+export SF_BOT_STALL_SECS=${SF_BOT_STALL_SECS:-}
+export SF_EXCLUDE_MAPS=${SF_EXCLUDE_MAPS:-103}
+EOF
+    echo "[fleet] wrote $PIDDIR/fleet.env (config persisted for restarts)"
     for i in $(seq 0 $((N-1))); do
       start_one "$i"
       sleep 8   # stagger so prefix clone + Proton boot don't thrash disk/CPU
