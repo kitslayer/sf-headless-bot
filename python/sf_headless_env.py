@@ -203,7 +203,12 @@ class SFHeadlessEnv(gym.Env):
         if opp_dead and not self_dead:
             reward += 1.0; terminated = True
         elif self_dead:
-            reward -= 1.0; terminated = True
+            # 2026-06-06 tuning: death (vs a stationary dummy this is almost
+            # always a fall off Desert3's edge) was -1.0 == a full kill, so the
+            # high-variance fall spike dominated and destabilized PPO. Halve it
+            # so a kill (+1.0) is worth 2 falls — biases toward finishing the
+            # opponent over timid edge-camping, and cuts the reward variance.
+            reward -= 0.5; terminated = True
         elif cur_round != self._round:
             terminated = True  # round advanced (stall/other) — episode boundary
 

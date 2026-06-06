@@ -108,3 +108,28 @@ log line. The watchdog's 150 MB / 90 s truncation was far too slow to contain a
 
 **Recovery.** Resumed cleanly from `ppo_headless_2800000_steps.zip` (lost ~10
 min). Fleet of 4 back on scene 6, supervisor + watchdog up, all fixes deployed.
+
+## 2026-06-06 — stage-0 v2 retune (FRESH run from 0)
+
+stage-0 v1 plateaued: over 2.8M steps vs the stationary dummy the mean ep_rew
+stayed **net-negative** (overall −0.72; first-15% −0.84 → last-15% −0.55; best
+peaks Q1 +0.26 / Q2 +0.65 / Q3 +0.21 / Q4 +0.49 — not climbing). Verified the
+sim is REAL first (live probe: both ents alive at y≈0 on Desert3 geometry, agent
+strafing/jumping and dropping the dummy 55→32 hp; map confirmed = Desert3
+buildIndex 6 reloaded every round, 1565/1579 rounds). So the plateau is genuine
+PPO instability + reward variance, not broken data. The negative mean is mostly
+**falling off Desert3's edges** (death == −1.0 == a full kill) drowning the
+damage signal.
+
+Three changes (commit pending), then a FRESH run (old run archived to
+`models/archive_stage0_v1_lr3e4/`, 2.8M policy kept as `BEST_..._2800000`):
+1. death/fall penalty −1.0 → −0.5 (kill +1.0 unchanged → a kill is worth 2 falls;
+   biases toward finishing over edge-camping, cuts variance).
+2. `VecNormalize(norm_reward=True, clip_reward=10, gamma=0.995)` — normalizes
+   returns, directly taming the ±spike variance that drove the oscillation.
+3. learning_rate 3e-4 → 1e-4.
+
+Watching for: ep_rew_mean climbing AND **holding** positive (the v1 run never
+held). First rollout (2k steps) was a noisy +2.0 over ~8 episodes — ignore until
+~300k+ steps. ep_rew_mean is RAW (VecMonitor is inside VecNormalize) so it stays
+comparable to v1.

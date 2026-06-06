@@ -62,7 +62,11 @@ def main():
     print(f"[train] envs on bridge ports {ports} opp_mode={args.opp_mode}")
     venv = SubprocVecEnv([make_env(p, args.opp_mode) for p in ports])
     venv = VecMonitor(venv)
-    venv = VecNormalize(venv, norm_obs=True, norm_reward=False, clip_obs=50.0)
+    # 2026-06-06 tuning: norm_reward=True normalizes returns by a running std,
+    # which directly tames the high-variance ±1/kill/fall reward spikes that
+    # were destabilizing PPO (oscillated for ~2.8M steps, never converged).
+    venv = VecNormalize(venv, norm_obs=True, norm_reward=True, clip_obs=50.0,
+                        clip_reward=10.0, gamma=0.995)
 
     ckpt = latest_checkpoint()
     # save_freq is per-env; convert desired total-step cadence.
@@ -85,7 +89,7 @@ def main():
             "MlpPolicy", venv, device="cuda", verbose=1,
             n_steps=512, batch_size=512, n_epochs=4,
             gamma=0.995, gae_lambda=0.95, ent_coef=0.01,
-            learning_rate=3e-4, clip_range=0.2,
+            learning_rate=1e-4, clip_range=0.2,   # 2026-06-06: 3e-4 oscillated; lower for stability
             policy_kwargs=dict(net_arch=[256, 256]),
             tensorboard_log=LOGS,
         )
