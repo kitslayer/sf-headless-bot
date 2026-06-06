@@ -34,6 +34,7 @@ reproducible and you can pick up tuning without re-deriving it.
 | 2.48M | **first all-positive window: +0.069 ↔ +0.24** | 123 checkpoints; 0 new restarts (13 total). Fleet ~12.5h continuous. At 23:30 all 3 ep_rew samples were positive (0.24/0.069/0.188) — first time the whole window cleared 0 (prior best was a lone +0.19 at 16:14 that cratered immediately). Most convincing improvement signal yet, but NOT yet called convergence — needs to hold positive next window (oscillation period ~25–35 min vs 10 min sampling). RAM ~6.0GB, disk 85%. Watching closely. |
 | 2.57M | oscillating −1.05 ↔ +0.24 | 128 checkpoints; 0 new restarts (13 total). Fleet ~13.5h continuous. The +0.24 all-positive window did NOT hold — reverted to the −1.0 trough within ~20 min, confirming it was a (wide) oscillation peak, not convergence. Band-top now occasionally clears 0; troughs unchanged ~−1.0. RAM stabilized ~5.7GB, disk 85%. |
 | 2.66M | oscillating −1.08 ↔ −0.27 | 133 checkpoints; 0 new restarts (13 total). Fleet ~14.5h continuous, disk 85%. RAM ~5.5GB (resumed slow ~150–250MB/h drift; ~26h headroom, non-urgent). Steady-state unchanged. |
+| 2.75M | oscillating −1.03 ↔ +0.03 | 137 checkpoints; 2nd clean watchdog auto-recovery (13→14) at ~01:55 (~9h after the 1st — recovered in one cycle, reclaimed RAM to ~6.0GB, training uninterrupted). Fleet ~15.5h continuous, disk 85%. Steady-state otherwise unchanged. |
 
 **Key finding:** the policy **oscillates** rather than converging — it reaches
 progressively higher positive peaks (+0.08 → +0.61 over ~1.1M steps, so the
