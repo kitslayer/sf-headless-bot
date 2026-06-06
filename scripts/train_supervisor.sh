@@ -14,6 +14,17 @@ CHECK=60
 cd "$BOTDIR"
 echo "[train-sup] start $(date) instances=$INSTANCES steps=$STEPS"
 
+# Stall detection (2026-06-06): a Proton instance occasionally native-crashes,
+# which can kill a SubprocVecEnv worker — the vec-env then blocks FOREVER on the
+# dead worker's pipe (trainer process alive, timesteps frozen, 0 progress). The
+# process-alive check below misses that. So also restart the trainer if it makes
+# < MIN_PROG steps in WINDOW seconds (resumes from checkpoint + reconnects to
+# live workers). WINDOW is long enough that a mere SLOWDOWN — one bad instance
+# limping the fleet ~6x while the watchdog recovers it — still clears MIN_PROG
+# and does NOT trigger a restart (no thrashing); only a true freeze does.
+WINDOW=900; MIN_PROG=1000
+anchor_ts=-1; anchor_time=$(date +%s)
+
 while true; do
   # Ensure the RL fleet is up (count live instances by listening bridge ports).
   live=$(ss -ulpn 2>/dev/null | grep -oE ":134[1-9]" | sort -u | wc -l)
@@ -29,7 +40,22 @@ while true; do
       cd "$BOTDIR/python"
       nohup python train_headless_ppo.py --instances "$INSTANCES" --base-bridge 1341 \
         --steps "$STEPS" --save-every 20000 >> "$BOTDIR/logs/train.log" 2>&1 ) &
+    anchor_ts=-1; anchor_time=$(date +%s)   # reset stall tracking for the fresh trainer
     sleep 10
+  else
+    # Trainer alive — verify it's actually progressing (not wedged on a dead worker).
+    cur_ts=$(grep total_timesteps logs/train.log 2>/dev/null | tail -1 | grep -oE '[0-9]+')
+    now=$(date +%s)
+    if [ -n "$cur_ts" ]; then
+      if [ "$anchor_ts" -lt 0 ] || [ "$((cur_ts - anchor_ts))" -ge "$MIN_PROG" ]; then
+        anchor_ts="$cur_ts"; anchor_time="$now"             # progressing → healthy
+      elif [ "$((now - anchor_time))" -ge "$WINDOW" ]; then
+        echo "[train-sup $(date '+%H:%M:%S')] trainer WEDGED: <${MIN_PROG} steps in ${WINDOW}s (stuck ~${cur_ts}) — killing to force resume-from-checkpoint"
+        pkill -9 -f "train_headless_ppo.py" 2>/dev/null
+        anchor_ts=-1; anchor_time="$now"
+        sleep 5
+      fi
+    fi
   fi
   sleep "$CHECK"
 done
