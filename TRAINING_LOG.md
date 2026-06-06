@@ -68,3 +68,43 @@ oscillation tops, so eval a few:
 - Logs bounded by the watchdog's 150 MB truncation (game spams a benign
   per-frame Torso NRE in batchmode).
 - Stable for many hours / 1.26M+ steps with supervisor + watchdog, 0 crashes.
+
+## 2026-06-06 — BOX HARD-FROZE at ~2.8M steps (root-caused + fixed)
+
+**What happened.** Healthy until 03:00 UTC (sar: 0.03% iowait, 58% mem, swap
+unused). Between 03:00–03:10 the per-frame game exceptions went *runaway* on
+instances 1/2/3 at once — each plugin log ballooned to ~3.5 GB in 90 s
+(~39 MB/s). At ~03:10 the box froze hard; it stayed unresponsive ~13h until a
+hard reset at 16:24. No OOM, no nvidia Xid, no MCE/thermal, no kernel panic.
+
+**Mechanism.** The 3.5 GB logs were *sparse* afterward (3.5 GB apparent / 148 MB
+actually on disk) → ~3.4 GB *per file* was dirty page-cache that never flushed.
+Three instances × 39 MB/s overwhelmed writeback → uninterruptible-I/O pileup →
+whole box wedged. journald couldn't write either, which is why there's no final
+log line. The watchdog's 150 MB / 90 s truncation was far too slow to contain a
+39 MB/s spam.
+
+**The two spam sources (both game-side, every frame, with stack traces):**
+1. `InvalidOperationException: Steamworks is not initialized` —
+   `SyncableObjectManager.LateUpdate → ListenForPackages → IsP2PPacketAvailable`.
+2. `NullReferenceException` — `OnlineRoom.Update → CheckSides →
+   GetComponentInChildren<Torso>()` (the long-known "Torso NRE").
+
+**Fixes shipped (this commit):**
+- *Source:* `IsPacketAvailableHeadlessPrefix` now ALWAYS returns false in
+  batchmode (no Steam = no P2P packets) — kills source #1 *and* the downstream
+  ListenForPackages NullRef at the root.
+- *Log layer:* `PerLobbyLogListener` drops the known benign per-frame blobs
+  (needle list incl. both exceptions + their stack frames) and emits one
+  rolled-up summary every 10 s — caps disk spam no matter what.
+- *Watchdog:* truncation threshold 150 → 100 MB.
+- *Host (operator runs w/ sudo):* `vm.dirty_background_bytes=256MB`,
+  `vm.dirty_bytes=512MB` in `/etc/sysctl.d/99-sf-dirty.conf` — caps the dirty
+  backlog so a writeback storm can never wedge the box again, from any source.
+- *Restart-safety:* `fleet.sh start` was clobbering `SF_FIXED_MAP` to empty on
+  supervisor restarts (it only re-exports `SFGYM_RL_SLOTS`) → random maps →
+  hang/flap; that path was LIVE the night it froze. It now sources the prior
+  `run/fleet.env` and only overrides with caller-set non-empty vars.
+
+**Recovery.** Resumed cleanly from `ppo_headless_2800000_steps.zip` (lost ~10
+min). Fleet of 4 back on scene 6, supervisor + watchdog up, all fixes deployed.

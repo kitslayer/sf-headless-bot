@@ -1616,32 +1616,20 @@ namespace SFHeadlessHost
         // Generic skip-prefix: return false to skip the original method.
         internal static bool SkipPrefix() => false;
 
-        // Headless oracle: channels[channel] can be null → 40k+ NullRef/frame in ListenForPackages.
+        // Headless oracle has NO Steam: the stock IsP2PPacketAvailable always
+        // throws "Steamworks is not initialized" (via TestIfAvailableClient),
+        // and ListenForPackages can also NullRef on a null channel — both every
+        // frame, each with a multi-line stack trace. Unfiltered that wrote tens
+        // of MB/s per oracle; on 2026-06-06 the combined dirty-page writeback
+        // storm across the fleet hard-froze the box for ~13h. There are no real
+        // P2P packets to read in a local single-process host, so ALWAYS report
+        // "none" and skip the original entirely — this also prevents the
+        // downstream ListenForPackages NullRef (it never tries to read a packet).
         internal static bool IsPacketAvailableHeadlessPrefix(object __instance, int channel, ref bool __result)
         {
             if (!_batchModeHost) return true;
-            try
-            {
-                var chField = AccessTools.Field(__instance.GetType(), "channels");
-                if ((object)chField == null) { __result = false; return false; }
-                var channels = chField.GetValue(__instance) as Array;
-                if (channels == null || channel < 0 || channel >= channels.Length)
-                {
-                    __result = false;
-                    return false;
-                }
-                if (channels.GetValue(channel) == null)
-                {
-                    __result = false;
-                    return false;
-                }
-            }
-            catch
-            {
-                __result = false;
-                return false;
-            }
-            return true;
+            __result = false;
+            return false;
         }
 
         // NSO.Start postfix on client: force the static mHasControl=true so
@@ -7097,6 +7085,40 @@ namespace SFHeadlessHost
         private readonly System.IO.StreamWriter _writer;
         [System.ThreadStatic] private static bool _reentryGuard;
 
+        // Spam suppression (2026-06-06 freeze fix). The headless game throws a
+        // few benign exceptions EVERY FRAME — Steamworks-not-init from leftover
+        // P2P paths, OnlineRoom.CheckSides NullRef on GetComponentInChildren<
+        // Torso>(), and the "IsHost before inside lobby" warning — each as a
+        // multi-line message+stacktrace blob. Unfiltered this wrote ~40 MB/s
+        // per oracle; the fleet-wide dirty-page writeback storm froze the box.
+        // The IsP2PPacketAvailable source fix kills the biggest source; this is
+        // the belt-and-suspenders that drops any remaining known per-frame
+        // blob and emits one rolled-up summary every few seconds so the spam
+        // stays visible without ever flooding disk again.
+        private long _suppressed;
+        private DateTime _lastSummaryUtc = DateTime.UtcNow;
+        private static readonly TimeSpan SummaryEvery = TimeSpan.FromSeconds(10);
+        private static readonly string[] _benignNeedles =
+        {
+            "Steamworks is not initialized",
+            "TestIfAvailableClient",
+            "IsP2PPacketAvailable",
+            "ListenForPackages",
+            "SyncableObjectManager.",
+            "OnlineRoom.CheckSides",
+            "OnlineRoom.Update",
+            "GetComponentInChildren",
+            "You should not call IsHost before",
+        };
+
+        private static bool IsBenignSpam(string data)
+        {
+            if (string.IsNullOrEmpty(data)) return false;
+            for (int i = 0; i < _benignNeedles.Length; i++)
+                if (data.IndexOf(_benignNeedles[i], StringComparison.Ordinal) >= 0) return true;
+            return false;
+        }
+
         public PerLobbyLogListener(string path)
         {
             // Append mode so a restart doesn't wipe history. Truncate is
@@ -7112,6 +7134,20 @@ namespace SFHeadlessHost
             _reentryGuard = true;
             try
             {
+                var data = eventArgs.Data == null ? null : eventArgs.Data.ToString();
+                if (IsBenignSpam(data))
+                {
+                    _suppressed++;
+                    var now = DateTime.UtcNow;
+                    var elapsed = now - _lastSummaryUtc;
+                    if (elapsed >= SummaryEvery)
+                    {
+                        _writer.WriteLine($"[Warning:SFHeadlessHost] suppressed {_suppressed} benign per-frame Unity-log spam lines in last {(int)elapsed.TotalSeconds}s (Steamworks-not-init / OnlineRoom NRE)");
+                        _suppressed = 0;
+                        _lastSummaryUtc = now;
+                    }
+                    return;
+                }
                 _writer.WriteLine($"[{eventArgs.Level,-7}:{eventArgs.Source.SourceName}] {eventArgs.Data}");
             }
             catch { /* never let logging crash the plugin OR recurse */ }

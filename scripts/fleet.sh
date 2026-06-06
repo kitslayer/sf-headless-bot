@@ -39,6 +39,22 @@ case "$cmd" in
     # (otherwise a restarted instance defaults to random maps + scripted —
     # diverges from the run and hits hang-prone scenes). launch_oracle.sh
     # sources this file on every (re)launch.
+    #
+    # RESTART-SAFETY (2026-06-06): the supervisor re-runs `fleet.sh start` but
+    # only re-exports SFGYM_RL_SLOTS — NOT SF_FIXED_MAP — so a naive rewrite
+    # clobbered SF_FIXED_MAP to empty → random maps → hang/flap (and that very
+    # path was live the night the box froze). So fall back to the PREVIOUSLY
+    # persisted fleet.env for any var the caller didn't explicitly export.
+    # Precedence: caller's non-empty env  >  prior fleet.env  >  built-in default.
+    _c_bots="${SFGYM_BOT_SLOTS:-}"; _c_rl="${SFGYM_RL_SLOTS:-}"
+    _c_map="${SF_FIXED_MAP:-}";     _c_stall="${SF_BOT_STALL_SECS:-}"
+    _c_excl="${SF_EXCLUDE_MAPS:-}"
+    [ -f "$PIDDIR/fleet.env" ] && . "$PIDDIR/fleet.env"
+    [ -n "$_c_bots" ]  && SFGYM_BOT_SLOTS="$_c_bots"
+    [ -n "$_c_rl" ]    && SFGYM_RL_SLOTS="$_c_rl"
+    [ -n "$_c_map" ]   && SF_FIXED_MAP="$_c_map"
+    [ -n "$_c_stall" ] && SF_BOT_STALL_SECS="$_c_stall"
+    [ -n "$_c_excl" ]  && SF_EXCLUDE_MAPS="$_c_excl"
     cat > "$PIDDIR/fleet.env" <<EOF
 export SFGYM_BOT_SLOTS=${SFGYM_BOT_SLOTS:-0,1}
 export SFGYM_RL_SLOTS=${SFGYM_RL_SLOTS:-}
@@ -46,7 +62,7 @@ export SF_FIXED_MAP=${SF_FIXED_MAP:-}
 export SF_BOT_STALL_SECS=${SF_BOT_STALL_SECS:-}
 export SF_EXCLUDE_MAPS=${SF_EXCLUDE_MAPS:-103}
 EOF
-    echo "[fleet] wrote $PIDDIR/fleet.env (config persisted for restarts)"
+    echo "[fleet] wrote $PIDDIR/fleet.env (SF_FIXED_MAP=${SF_FIXED_MAP:-<none>} RL_SLOTS=${SFGYM_RL_SLOTS:-<none>}, restart-safe)"
     for i in $(seq 0 $((N-1))); do
       start_one "$i"
       sleep 8   # stagger so prefix clone + Proton boot don't thrash disk/CPU

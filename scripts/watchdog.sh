@@ -63,7 +63,7 @@ while true; do
   for lf in "$LOGS"/oracle*-plugin.log "$LOGS"/oracle*-unity.log "$LOGS"/oracle*-combined.log; do
     [ -f "$lf" ] || continue
     sz=$(stat -c %s "$lf" 2>/dev/null || echo 0)
-    if [ "$sz" -gt 157286400 ]; then
+    if [ "$sz" -gt 104857600 ]; then
       : > "$lf"
       echo "[watchdog $(date '+%H:%M:%S')] truncated $lf (was $((sz/1048576))MB)"
     fi
