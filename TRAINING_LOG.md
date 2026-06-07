@@ -164,6 +164,18 @@ Ported the scripted bot's senses into the obs:
 obs is now **72-dim** (self 19 + opp 19 + rel 4 + opp-pred 2 + void 4 + rayfan 16
 + proj 8). Fresh run started clean (old 22/26/48-dim runs archived under
 `models/archive_*`).
+
+**fps cost (2026-06-07):** the 72-dim DLL halved throughput — **~12 fps** (was
+~24) — because `EmitStateSnapshotTo` now does 16× `RaycastAll` + 2×
+`FindObjectsOfType` per snapshot at 20 Hz. Verified the run is genuinely
+ADVANCING at 12 fps (2048→6144 in 210s). Left as-is for the overnight babysit
+(progress + liveness > speed; no risky rebuild while unattended). **MORNING TODO:
+optimize** — throttle `FindObjectsOfType` to ~5 Hz with caching + use
+`RaycastNonAlloc`; should restore ~24 fps without dropping the senses. One
+transient freeze occurred during the chaotic restart/CLI-crash sequence
+(unrelated Bun segfault crashed the CLI; setsid'd fleet survived) — recovered by
+restarting the trainer; current run stable. Overnight monitor actively pings all
+bridges + verifies timestep delta each tick.
 Verdict pending the clean ~300k read; the key question is whether edge-awareness
 finally stops the falling. (Commit 001b8f2.)
 
