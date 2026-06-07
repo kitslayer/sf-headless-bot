@@ -133,3 +133,35 @@ Watching for: ep_rew_mean climbing AND **holding** positive (the v1 run never
 held). First rollout (2k steps) was a noisy +2.0 over ~8 episodes — ignore until
 ~300k+ steps. ep_rew_mean is RAW (VecMonitor is inside VecNormalize) so it stays
 comparable to v1.
+
+## 2026-06-07 — v3: PERCEPTION UPGRADE (obs 22 → 48), ported from scripted bot
+
+Root insight (after reading the scripted-bot docs at `~/stickfight-bot/docs/` +
+`BOT_SENSING.md`): v1/v2's 22-dim obs (pos/vel/hp only) was far poorer than the
+scripted bot's BotContext AND the original FrameBuilder design (which fed the
+Python policy a 64-ray spatial fan — the headless snapshot had dropped it). The
+agent was effectively blind to map geometry → kept walking off Desert3's edges
+(confirmed via live probe: agent y plunged to −13.6, falling 9/35 frames) → never
+beat even a stationary dummy across 2.8M (v1) + 500k (v2) steps, smoothed mean
+stuck ~−0.3 to −0.7. **Not a tuning problem — a perception problem.**
+
+Ported the scripted bot's senses into the obs:
+- **Tier 1 (env/Python):** void/edge sense — edge distances, kill-floor height,
+  `SimulateVoidTime` ballistic time-to-void (bounds y<−11.5, |z|>19). The fix for
+  falling. No mod rebuild (computed from snapshot pos+vel).
+- **Tier 2/3 (mod snapshot + env):** per-ent self/opp state mirroring BotContext —
+  grounded, ragdolled, swinging, blocking, jump-cd, wall-cd, sinceShot, ammo,
+  aim z/y — plus opp predicted-pos (velocity lead). Added to `EmitStateSnapshotTo`
+  (10 new JSON fields/ent; field names verified vs decompiled Assembly-CSharp,
+  every read guarded). DLL rebuilt + deployed.
+- **Deferred:** 64-ray spatial fan + projectile/threat senses → stage-1 (inert on
+  flat Desert3 vs a stationary dummy; wire when opp moves/shoots + complex maps).
+- No grab (unimplemented in vanilla).
+
+obs is now **48-dim** (self 19 + opp 19 + rel 4 + opp-pred 2 + void 4). Fresh run
+started clean (old 22/26-dim runs archived under `models/archive_stage0_v*`).
+Verdict pending the clean ~300k read; the key question is whether edge-awareness
+finally stops the falling. (Commit 001b8f2.)
+
+⚠ User flagged a *possible deeper issue with the headless build itself* — if the
+perception upgrade still doesn't let it beat a dummy, investigate that next.
