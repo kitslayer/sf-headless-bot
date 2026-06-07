@@ -154,12 +154,16 @@ Ported the scripted bot's senses into the obs:
   aim z/y — plus opp predicted-pos (velocity lead). Added to `EmitStateSnapshotTo`
   (10 new JSON fields/ent; field names verified vs decompiled Assembly-CSharp,
   every read guarded). DLL rebuilt + deployed.
-- **Deferred:** 64-ray spatial fan + projectile/threat senses → stage-1 (inert on
-  flat Desert3 vs a stationary dummy; wire when opp moves/shoots + complex maps).
+- **Tier 2 spatial + Tier 3 threat (added on request — "keep this"):** 16-ray YZ
+  world-distance fan per ent (downsized from the original FrameBuilder's 64;
+  RaycastAll + IsChildOf-rig filter so it senses terrain, not own ragdoll/opp —
+  verified live: open above ~1.0, ground below ~0.15) + top-level `proj[]` of
+  in-flight RayCastForward/ThrownWeapon as [z,y,dirz,diry] (empty at stage 0).
 - No grab (unimplemented in vanilla).
 
-obs is now **48-dim** (self 19 + opp 19 + rel 4 + opp-pred 2 + void 4). Fresh run
-started clean (old 22/26-dim runs archived under `models/archive_stage0_v*`).
+obs is now **72-dim** (self 19 + opp 19 + rel 4 + opp-pred 2 + void 4 + rayfan 16
++ proj 8). Fresh run started clean (old 22/26/48-dim runs archived under
+`models/archive_*`).
 Verdict pending the clean ~300k read; the key question is whether edge-awareness
 finally stops the falling. (Commit 001b8f2.)
 
