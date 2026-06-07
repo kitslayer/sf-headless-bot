@@ -93,10 +93,11 @@ class SFHeadlessEnv(gym.Env):
         self.asock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.asock.bind(("127.0.0.1", 0))
 
-        # obs: self(19) + opp(19) + relative(4) + opp-pred(2) + void-sense(4) = 48
+        # obs: self(19)+opp(19)+rel(4)+opp-pred(2)+void(4)+rayfan(16)+proj(8) = 72
         # self/opp 19 = kinematics(6)+hp/alive/armed(3)+state(10: grounded,
         # ragdolled, swinging, blocking, jump-cd, wall-cd, sinceShot, ammo, aim z/y)
-        high = np.full(48, np.inf, dtype=np.float32)
+        # rayfan = 16 YZ-plane world-distance rays; proj = 2 nearest projectiles
+        high = np.full(72, np.inf, dtype=np.float32)
         self.observation_space = spaces.Box(-high, high, dtype=np.float32)
         self.action_space = spaces.MultiDiscrete([3, 2, 2])
 
@@ -211,7 +212,25 @@ class SFHeadlessEnv(gym.Env):
         else:
             void = [0.0, 0.0, 0.0, 0.0]
 
-        obs = np.array(mf + of + rel + pred + void, dtype=np.float32)
+        # Tier-2 spatial fan: 16 normalized ray distances around self (1=clear to 20m).
+        rays = (me.get("rays") if me else None) or []
+        rays = [float(r) for r in rays[:16]] + [1.0] * max(0, 16 - len(rays))
+
+        # Tier-3 threat sense: the 2 nearest in-flight projectiles, relative to
+        # self (rel_z, rel_y, dir_z, dir_y). Zeros when none (e.g. stage 0).
+        proj_feats = [0.0] * 8
+        if me is not None and snap:
+            sz = float(me.get("z", 0.0)); sy = float(me.get("y", 0.0))
+            scored = []
+            for pr in (snap.get("proj") or []):
+                if len(pr) >= 4:
+                    rz = float(pr[0]) - sz; ry = float(pr[1]) - sy
+                    scored.append((rz * rz + ry * ry, rz, ry, float(pr[2]), float(pr[3])))
+            scored.sort(key=lambda t: t[0])
+            for k, (_, rz, ry, fz, fy) in enumerate(scored[:2]):
+                proj_feats[k * 4:k * 4 + 4] = [rz, ry, fz, fy]
+
+        obs = np.array(mf + of + rel + pred + void + rays + proj_feats, dtype=np.float32)
         return obs, me, op
 
     # ---- gym API ----

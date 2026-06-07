@@ -6313,6 +6313,10 @@ namespace SFHeadlessHost
                 var bulletsLeftF   = ((object)fightingType != null) ? AccessTools.Field(fightingType, "bulletsLeft") : null;
                 var isBlockingF    = ((object)blockType != null) ? AccessTools.Field(blockType, "isBlocking") : null;
                 var sinceShotF     = ((object)weaponTypeT != null) ? AccessTools.Field(weaponTypeT, "sinceShot") : null;
+                // World-geometry ray mask: exclude player/projectile/ignoreplayer
+                // layers (8/9/10/11/18/29 per Pathfinder.cs) so the spatial fan
+                // senses terrain (walls/platforms/gaps), not other rigs/bullets.
+                int worldRayMask = ~((1 << 8) | (1 << 9) | (1 << 10) | (1 << 11) | (1 << 18) | (1 << 29));
                 foreach (var kv in SlotToRig)
                 {
                     var rig = kv.Value;
@@ -6380,8 +6384,65 @@ namespace SFHeadlessHost
                     _sb.Append(",\"bl\":").Append(bulletsLeft);
                     _sb.Append(",\"aimz\":").Append(aimZ.ToString("0.000", ci));
                     _sb.Append(",\"aimy\":").Append(aimY.ToString("0.000", ci));
+                    // Tier-2 spatial ray fan: 16 rays in the YZ plane (x is locked
+                    // in SF) from the body, world geometry only. Normalized hit
+                    // distance (1.0 = clear to 20m). Original FrameBuilder used 64;
+                    // 16 is enough resolution for an MLP + keeps the obs bounded.
+                    _sb.Append(",\"rays\":[");
+                    for (int ri = 0; ri < 16; ri++)
+                    {
+                        float ang = ri * 0.3926991f;   // 2*pi/16
+                        var dir = new Vector3(0f, Mathf.Sin(ang), Mathf.Cos(ang));
+                        // RaycastAll + skip any collider belonging to a PLAYER rig
+                        // (own ragdoll body parts sit on non-masked layers and pinned
+                        // every ray short; the opponent is already in the obs). Leaves
+                        // only world geometry — walls/platforms/ground/edges.
+                        float best = 20f;
+                        var hits = Physics.RaycastAll(p, dir, 20f, worldRayMask);
+                        for (int h = 0; h < hits.Length; h++)
+                        {
+                            var col = hits[h].collider;
+                            if ((object)col == null) continue;
+                            bool isRig = false;
+                            foreach (var kv2 in SlotToRig)
+                            {
+                                if ((object)kv2.Value != null && col.transform.IsChildOf(kv2.Value.transform)) { isRig = true; break; }
+                            }
+                            if (isRig) continue;
+                            if (hits[h].distance < best) best = hits[h].distance;
+                        }
+                        if (ri > 0) _sb.Append(",");
+                        _sb.Append((best / 20f).ToString("0.000", ci));
+                    }
+                    _sb.Append("]");
                     _sb.Append("}");
                 }
+                _sb.Append("]");   // close ents
+                // Tier-3 threat sense: in-flight projectiles (RayCastForward) +
+                // thrown blades (ThrownWeapon) as [z, y, fz, fy] (pos + unit dir),
+                // up to 8. Empty at stage 0 (stationary dummy never shoots).
+                _sb.Append(",\"proj\":[");
+                try
+                {
+                    int pc = 0;
+                    foreach (var tn in new[] { "RayCastForward", "ThrownWeapon" })
+                    {
+                        var pt = AccessTools.TypeByName(tn);
+                        if ((object)pt == null) continue;
+                        var arr = UnityEngine.Object.FindObjectsOfType(pt);
+                        for (int i = 0; i < arr.Length && pc < 8; i++)
+                        {
+                            var comp = arr[i] as Component;
+                            if ((object)comp == null) continue;
+                            var pp = comp.transform.position; var fwd = comp.transform.forward;
+                            if (pc > 0) _sb.Append(",");
+                            _sb.Append("[").Append(pp.z.ToString("0.00", ci)).Append(",").Append(pp.y.ToString("0.00", ci))
+                               .Append(",").Append(fwd.z.ToString("0.000", ci)).Append(",").Append(fwd.y.ToString("0.000", ci)).Append("]");
+                            pc++;
+                        }
+                    }
+                }
+                catch { }
                 _sb.Append("]}");
                 SendBridgeJson(to, _sb.ToString());
             }
