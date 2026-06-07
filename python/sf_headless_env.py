@@ -31,6 +31,37 @@ except ImportError:  # fall back to classic gym
     from gym import spaces
 
 
+# --- Void / edge sense (2026-06-07) -----------------------------------------
+# Ported from the scripted bot's terrain awareness (docs/BOT_SENSING.md +
+# mod ScriptedBotMaster.WaypointInVoid / SimulateVoidTime). The RL agent's obs
+# was blind to map geometry, so it kept walking off Desert3's edges and could
+# never beat even a stationary dummy. These give it the SAME edge/floor sense
+# the scripted bot uses. SF playable box (Desert3 / general kill thresholds):
+# kill floor at y<-11.5, horizontal edges at |z|>19.
+_VOID_Y = -11.5          # kill-floor Y
+_VOID_Z = 19.0           # horizontal edge |z|
+_VOID_SPAN = 2.0 * _VOID_Z
+_G = 9.81
+_VOID_HORIZON = 1.2      # seconds for the predictive look-ahead
+
+
+def _ballistic_void_time(z, y, vz, vy, horizon=_VOID_HORIZON):
+    """Faithful port of ScriptedBotMaster.SimulateVoidTime: integrate pos+vel
+    under gravity (dt=0.05) and return seconds until the point leaves the
+    playable box (y<_VOID_Y or |z|>_VOID_Z), else `horizon`. Used for the
+    airborne/knocked-off case."""
+    dt = 0.05
+    t = 0.0
+    while t < horizon:
+        vy -= _G * dt
+        y += vy * dt
+        z += vz * dt
+        if y < _VOID_Y or abs(z) > _VOID_Z:
+            return t
+        t += dt
+    return horizon
+
+
 class SFHeadlessEnv(gym.Env):
     metadata = {"render_modes": []}
 
@@ -62,8 +93,10 @@ class SFHeadlessEnv(gym.Env):
         self.asock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.asock.bind(("127.0.0.1", 0))
 
-        # obs: self(9) + opp(9) + relative(4) = 22
-        high = np.full(22, np.inf, dtype=np.float32)
+        # obs: self(19) + opp(19) + relative(4) + opp-pred(2) + void-sense(4) = 48
+        # self/opp 19 = kinematics(6)+hp/alive/armed(3)+state(10: grounded,
+        # ragdolled, swinging, blocking, jump-cd, wall-cd, sinceShot, ammo, aim z/y)
+        high = np.full(48, np.inf, dtype=np.float32)
         self.observation_space = spaces.Box(-high, high, dtype=np.float32)
         self.action_space = spaces.MultiDiscrete([3, 2, 2])
 
@@ -123,22 +156,62 @@ class SFHeadlessEnv(gym.Env):
         op = self._ent(snap, self.opp_slot)
 
         def feats(e):
+            # 19 per-ent features: kinematics(6) + hp/alive/armed(3) + Tier-2/3
+            # state(10): grounded, ragdolled, swinging, blocking, jump-cd,
+            # wall-cd, sinceShot, bulletsLeft, aim z/y. Bounded so VecNormalize
+            # has sane inputs even before its running stats warm up.
             if e is None:
-                return [0.0] * 9
+                return [0.0] * 19
+            sj = float(e.get("sj", 9.0)); sw = float(e.get("sw", 9.0))
+            ss = float(e.get("ss", 9.0)); bl = float(e.get("bl", -1))
             return [float(e.get("x", 0)), float(e.get("y", 0)), float(e.get("z", 0)),
                     float(e.get("vx", 0)), float(e.get("vy", 0)), float(e.get("vz", 0)),
                     float(e.get("hp", 0)) / 100.0,
                     1.0 if e.get("alive", False) else 0.0,
-                    1.0 if e.get("armed", False) else 0.0]
+                    1.0 if e.get("armed", False) else 0.0,
+                    1.0 if e.get("grnd", False) else 0.0,
+                    1.0 if e.get("rag", False) else 0.0,
+                    1.0 if e.get("sws", False) else 0.0,
+                    1.0 if e.get("blk", False) else 0.0,
+                    min(sj, 1.0), min(sw, 1.0), min(ss, 2.0) / 2.0,
+                    max(bl, 0.0) / 30.0,
+                    float(e.get("aimz", 0)), float(e.get("aimy", 0))]
 
         mf, of = feats(me), feats(op)
         if me and op:
             dx = of[0] - mf[0]; dy = of[1] - mf[1]; dz = of[2] - mf[2]
             dist = (dx * dx + dy * dy + dz * dz) ** 0.5
             rel = [dx, dy, dz, dist]
+            # opp predicted relative position at 0.3s (velocity lead — Tier-3
+            # aim help). of[4]=opp vy, of[5]=opp vz; mf[4/5]=self vy/vz.
+            pred = [dz + (of[5] - mf[5]) * 0.3, dy + (of[4] - mf[4]) * 0.3]
         else:
             rel = [0.0, 0.0, 0.0, 0.0]
-        obs = np.array(mf + of + rel, dtype=np.float32)
+            pred = [0.0, 0.0]
+
+        # void/edge sense (ported from the scripted bot) — encodes the map
+        # geometry (edges at |z|>19, kill floor y<-11.5) the agent was blind to.
+        if me is not None:
+            sz = float(me.get("z", 0.0)); sy = float(me.get("y", 0.0))
+            svz = float(me.get("vz", 0.0)); svy = float(me.get("vy", 0.0))
+            d_negz = min(1.0, max(0.0, sz + _VOID_Z) / _VOID_SPAN)  # margin to -z edge (MoveX>0 walks here)
+            d_posz = min(1.0, max(0.0, _VOID_Z - sz) / _VOID_SPAN)  # margin to +z edge
+            h_floor = min(1.0, max(0.0, sy - _VOID_Y) / 13.0)       # height above kill floor
+            # predictive time-to-void: soonest my current motion leaves the box.
+            t_horiz = _VOID_HORIZON
+            if svz < -0.1:                                          # drifting toward -z edge
+                t_horiz = max(0.0, sz + _VOID_Z) / -svz
+            elif svz > 0.1:                                         # drifting toward +z edge
+                t_horiz = max(0.0, _VOID_Z - sz) / svz
+            t_void = min(t_horiz, _VOID_HORIZON)
+            if svy < -1.0:   # actually falling — ballistic sim catches floor/edge crossing
+                t_void = min(t_void, _ballistic_void_time(sz, sy, svz, svy))
+            t_void = max(0.0, t_void) / _VOID_HORIZON               # 1=safe, ->0 = about to leave box
+            void = [d_negz, d_posz, h_floor, t_void]
+        else:
+            void = [0.0, 0.0, 0.0, 0.0]
+
+        obs = np.array(mf + of + rel + pred + void, dtype=np.float32)
         return obs, me, op
 
     # ---- gym API ----

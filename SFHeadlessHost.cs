@@ -6295,9 +6295,24 @@ namespace SFHeadlessHost
                 var hhType = AccessTools.TypeByName("HealthHandler");
                 var ciType = AccessTools.TypeByName("CharacterInformation");
                 var fightingType = AccessTools.TypeByName("Fighting");
+                var blockType = AccessTools.TypeByName("BlockHandler");
+                var aimHelperType = AccessTools.TypeByName("AimTargetHelper");
+                var weaponTypeT = AccessTools.TypeByName("Weapon");
                 var hpF = ((object)hhType != null) ? AccessTools.Field(hhType, "health") : null;
                 var deadF = ((object)ciType != null) ? AccessTools.Field(ciType, "isDead") : null;
                 var weaponF = ((object)fightingType != null) ? AccessTools.Field(fightingType, "weapon") : null;
+                // Tier 2/3 perception (2026-06-07): self/opp movement + combat state, mirroring
+                // the scripted bot's BotContext (docs/BOT_SENSING.md). Field names verified vs
+                // decompiled Assembly-CSharp. Every read is guarded → a missing field degrades to
+                // a default and never breaks the snapshot.
+                var sinceGroundedF = ((object)ciType != null) ? AccessTools.Field(ciType, "sinceGrounded") : null;
+                var sinceFallenF   = ((object)ciType != null) ? AccessTools.Field(ciType, "sinceFallen") : null;
+                var sinceJumpedF   = ((object)ciType != null) ? AccessTools.Field(ciType, "sinceJumped") : null;
+                var sinceWallF     = ((object)ciType != null) ? AccessTools.Field(ciType, "sinceWall") : null;
+                var isSwingingF    = ((object)fightingType != null) ? AccessTools.Field(fightingType, "isSwinging") : null;
+                var bulletsLeftF   = ((object)fightingType != null) ? AccessTools.Field(fightingType, "bulletsLeft") : null;
+                var isBlockingF    = ((object)blockType != null) ? AccessTools.Field(blockType, "isBlocking") : null;
+                var sinceShotF     = ((object)weaponTypeT != null) ? AccessTools.Field(weaponTypeT, "sinceShot") : null;
                 foreach (var kv in SlotToRig)
                 {
                     var rig = kv.Value;
@@ -6315,11 +6330,32 @@ namespace SFHeadlessHost
                         }
                     }
                     float hp = -1f; bool alive = true; bool armed = false;
+                    bool grounded = false, ragdolled = false, swinging = false, blocking = false;
+                    float sinceJumped = 9f, sinceWall = 9f, sinceShot = 9f; int bulletsLeft = -1;
+                    float aimZ = 0f, aimY = 0f;
                     try
                     {
+                        var cinf = ((object)ciType != null) ? rig.GetComponentInChildren(ciType) : null;
+                        if ((object)cinf != null)
+                        {
+                            if ((object)deadF != null) alive = !(bool)deadF.GetValue(cinf);
+                            if ((object)sinceGroundedF != null) grounded = (float)sinceGroundedF.GetValue(cinf) < 0.2f;
+                            if ((object)sinceFallenF != null) ragdolled = (float)sinceFallenF.GetValue(cinf) < 0f;
+                            if ((object)sinceJumpedF != null) sinceJumped = (float)sinceJumpedF.GetValue(cinf);
+                            if ((object)sinceWallF != null) sinceWall = (float)sinceWallF.GetValue(cinf);
+                        }
                         if ((object)hpF != null) { var hh = rig.GetComponentInChildren(hhType); if ((object)hh != null) hp = (float)hpF.GetValue(hh); }
-                        if ((object)deadF != null) { var cinf = rig.GetComponentInChildren(ciType); if ((object)cinf != null) alive = !(bool)deadF.GetValue(cinf); }
-                        if ((object)weaponF != null) { var fg = rig.GetComponentInChildren(fightingType); if ((object)fg != null) armed = (object)weaponF.GetValue(fg) != null; }
+                        var fg = ((object)fightingType != null) ? rig.GetComponentInChildren(fightingType) : null;
+                        if ((object)fg != null)
+                        {
+                            object wpn = ((object)weaponF != null) ? weaponF.GetValue(fg) : null;
+                            armed = (object)wpn != null;
+                            if ((object)isSwingingF != null) swinging = (bool)isSwingingF.GetValue(fg);
+                            if (armed && (object)bulletsLeftF != null) { try { bulletsLeft = (int)bulletsLeftF.GetValue(fg); } catch { } }
+                            if (armed && (object)sinceShotF != null) { try { sinceShot = (float)sinceShotF.GetValue(wpn); } catch { } }
+                        }
+                        if ((object)blockType != null) { var bh = rig.GetComponentInChildren(blockType); if ((object)bh != null && (object)isBlockingF != null) blocking = (bool)isBlockingF.GetValue(bh); }
+                        if ((object)aimHelperType != null) { var ah = rig.GetComponentInChildren(aimHelperType) as Component; if ((object)ah != null) { var fwd = ah.transform.forward; aimZ = fwd.z; aimY = fwd.y; } }
                     }
                     catch { }
                     if (!first) _sb.Append(",");
@@ -6334,6 +6370,16 @@ namespace SFHeadlessHost
                     _sb.Append(",\"hp\":").Append(hp.ToString("0.0", ci));
                     _sb.Append(",\"alive\":").Append(alive ? "true" : "false");
                     _sb.Append(",\"armed\":").Append(armed ? "true" : "false");
+                    _sb.Append(",\"grnd\":").Append(grounded ? "true" : "false");
+                    _sb.Append(",\"rag\":").Append(ragdolled ? "true" : "false");
+                    _sb.Append(",\"sws\":").Append(swinging ? "true" : "false");
+                    _sb.Append(",\"blk\":").Append(blocking ? "true" : "false");
+                    _sb.Append(",\"sj\":").Append(sinceJumped.ToString("0.00", ci));
+                    _sb.Append(",\"sw\":").Append(sinceWall.ToString("0.00", ci));
+                    _sb.Append(",\"ss\":").Append(sinceShot.ToString("0.00", ci));
+                    _sb.Append(",\"bl\":").Append(bulletsLeft);
+                    _sb.Append(",\"aimz\":").Append(aimZ.ToString("0.000", ci));
+                    _sb.Append(",\"aimy\":").Append(aimY.ToString("0.000", ci));
                     _sb.Append("}");
                 }
                 _sb.Append("]}");
