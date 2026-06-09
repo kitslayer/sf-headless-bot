@@ -29,19 +29,21 @@ mkdir -p "$BOTDIR/logs" "$PFX_BASE"
 [ -f "$BOTDIR/run/fleet.env" ] && . "$BOTDIR/run/fleet.env"
 
 export STEAM_COMPAT_CLIENT_INSTALL_PATH="$STEAM"
-if [ "$I" -eq 0 ]; then
-  export STEAM_COMPAT_DATA_PATH="$MAIN_PFX"
-else
-  PFX="$PFX_BASE/$I"
-  # Clone the (already-initialized + activated) main prefix on first use so
-  # we don't pay Proton's slow first-run setup per instance.
-  if [ ! -d "$PFX/pfx" ]; then
-    echo "[launch_oracle] cloning main wineprefix → $PFX (first run for instance $I)"
-    mkdir -p "$PFX"
-    cp -a "$MAIN_PFX/." "$PFX/" 2>/dev/null
-  fi
-  export STEAM_COMPAT_DATA_PATH="$PFX"
+# ALL instances (incl. 0) run on a per-instance CLONE of the main prefix.
+# Instance 0 used to run directly on the shared main prefix, but its live
+# wineserver/DXVK-shader-cache state fell into a native-crash loop (2026-06-09:
+# 812 of 837 watchdog restarts were instance 0, ~1 every 5 min, while 1/2/3 on
+# clones were rock-stable). Clones derived from the main prefix ARE stable, so
+# give slot 0 its own clone too.
+PFX="$PFX_BASE/$I"
+# Clone the (already-initialized + activated) main prefix on first use so
+# we don't pay Proton's slow first-run setup per instance.
+if [ ! -d "$PFX/pfx" ]; then
+  echo "[launch_oracle] cloning main wineprefix → $PFX (first run for instance $I)"
+  mkdir -p "$PFX"
+  cp -a "$MAIN_PFX/." "$PFX/" 2>/dev/null
 fi
+export STEAM_COMPAT_DATA_PATH="$PFX"
 export WINEDLLOVERRIDES="winhttp=n,b"
 export PROTON_USE_XALIA=0          # Xalia crashes without a real display
 export WINEDEBUG=-all
