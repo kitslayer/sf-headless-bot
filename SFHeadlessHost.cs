@@ -1852,13 +1852,33 @@ namespace SFHeadlessHost
         // pauseTime for pause), so we assert our scale in LateUpdate (runs
         // after TimeHandler) and ONLY when the game intends normal speed —
         // stock slowmo/pause behavior is preserved exactly.
+        // REFLECTION, not a direct TimeHandler reference: refs/Assembly-CSharp.dll
+        // carries the SERVER assembly identity ("Assembly-CSharp.srv"), so direct
+        // game-type references fail to resolve at runtime (FileNotFoundException
+        // on JIT, spamming every frame — that's why this codebase reflects all
+        // game types; learned the hard way 2026-06-09).
+        private static FieldInfo _thPauseF, _thManagerF;
+        private static bool _thLookupDone;
         private void LateUpdate()
         {
             if (!_batchModeHost || TrainTimeScale <= 1f) return;
+            if (!_thLookupDone)
+            {
+                _thLookupDone = true;
+                var tht = AccessTools.TypeByName("TimeHandler");
+                if ((object)tht != null)
+                {
+                    _thPauseF = AccessTools.Field(tht, "pauseTime");
+                    _thManagerF = AccessTools.Field(tht, "managerTime");
+                }
+                Log.LogInfo($"[timescale] TimeHandler fields resolved: pause={( (object)_thPauseF != null )} manager={( (object)_thManagerF != null )} target={TrainTimeScale:0.0}x");
+            }
+            if ((object)_thPauseF == null || (object)_thManagerF == null) return;
             try
             {
-                if (TimeHandler.pauseTime == 1f && TimeHandler.managerTime == 1f
-                    && Time.timeScale != TrainTimeScale)
+                float pause = (float)_thPauseF.GetValue(null);
+                float mgr = (float)_thManagerF.GetValue(null);
+                if (pause == 1f && mgr == 1f && Time.timeScale != TrainTimeScale)
                     Time.timeScale = TrainTimeScale;
             }
             catch { }
