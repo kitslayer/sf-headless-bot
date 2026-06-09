@@ -49,20 +49,28 @@ case "$cmd" in
     _c_bots="${SFGYM_BOT_SLOTS:-}"; _c_rl="${SFGYM_RL_SLOTS:-}"
     _c_map="${SF_FIXED_MAP:-}";     _c_stall="${SF_BOT_STALL_SECS:-}"
     _c_excl="${SF_EXCLUDE_MAPS:-}"
+    _c_ts="${SF_TIMESCALE:-}";      _c_grace="${SF_PRE_COMBAT_DELAY:-}"
+    _c_nmd="${SF_NEXT_MATCH_DELAY:-}"
     [ -f "$PIDDIR/fleet.env" ] && . "$PIDDIR/fleet.env"
     [ -n "$_c_bots" ]  && SFGYM_BOT_SLOTS="$_c_bots"
     [ -n "$_c_rl" ]    && SFGYM_RL_SLOTS="$_c_rl"
     [ -n "$_c_map" ]   && SF_FIXED_MAP="$_c_map"
     [ -n "$_c_stall" ] && SF_BOT_STALL_SECS="$_c_stall"
     [ -n "$_c_excl" ]  && SF_EXCLUDE_MAPS="$_c_excl"
+    [ -n "$_c_ts" ]    && SF_TIMESCALE="$_c_ts"
+    [ -n "$_c_grace" ] && SF_PRE_COMBAT_DELAY="$_c_grace"
+    [ -n "$_c_nmd" ]   && SF_NEXT_MATCH_DELAY="$_c_nmd"
     cat > "$PIDDIR/fleet.env" <<EOF
 export SFGYM_BOT_SLOTS=${SFGYM_BOT_SLOTS:-0,1}
 export SFGYM_RL_SLOTS=${SFGYM_RL_SLOTS:-}
 export SF_FIXED_MAP=${SF_FIXED_MAP:-}
 export SF_BOT_STALL_SECS=${SF_BOT_STALL_SECS:-}
 export SF_EXCLUDE_MAPS=${SF_EXCLUDE_MAPS:-103}
+export SF_TIMESCALE=${SF_TIMESCALE:-}
+export SF_PRE_COMBAT_DELAY=${SF_PRE_COMBAT_DELAY:-}
+export SF_NEXT_MATCH_DELAY=${SF_NEXT_MATCH_DELAY:-}
 EOF
-    echo "[fleet] wrote $PIDDIR/fleet.env (SF_FIXED_MAP=${SF_FIXED_MAP:-<none>} RL_SLOTS=${SFGYM_RL_SLOTS:-<none>}, restart-safe)"
+    echo "[fleet] wrote $PIDDIR/fleet.env (SF_FIXED_MAP=${SF_FIXED_MAP:-<none>} RL_SLOTS=${SFGYM_RL_SLOTS:-<none>} TIMESCALE=${SF_TIMESCALE:-1}, restart-safe)"
     for i in $(seq 0 $((N-1))); do
       start_one "$i"
       sleep 8   # stagger so prefix clone + Proton boot don't thrash disk/CPU

@@ -105,6 +105,10 @@ class SFHeadlessEnv(gym.Env):
         self._round = None
         self._prev_self_hp = 100.0
         self._prev_opp_hp = 100.0
+        # Normalized aim-at-opponent direction, refreshed from each snapshot in
+        # _build_obs and sent with every action (aimx==world-z 1:1, verified).
+        self._aim_dz = 1.0
+        self._aim_dy = 0.0
 
     # ---- bridge I/O ----
     def _rpc(self, obj, wait=0.4):
@@ -136,10 +140,17 @@ class SFHeadlessEnv(gym.Env):
         move, jump, fire = int(action[0]), int(action[1]), int(action[2])
         mx = (-1.0 if move == 0 else (1.0 if move == 2 else 0.0))
         buttons = (1 if jump else 0) | (2 if fire else 0)
-        # Aim toward the opponent on the horizontal (z) axis by default.
-        aimx = -mx if mx != 0 else 1.0
+        # AUTO-AIM AT THE OPPONENT (2026-06-09 fix). The old heuristic
+        # (aimx=-mx while moving, +1.0 idle) never aimed at the target; worse,
+        # keyboard-typed rigs had ALL aim input overridden every frame by stock
+        # UserAim()'s RotateTowardsMouse (xvfb mouse = meaningless) — fixed by
+        # a batchmode skip-patch in the host. With that patch, stock applies
+        # LookRotation(0, AimY, -AimX): world aim z = -AimX, y = +AimY
+        # (Controller.cs:474). So to aim at the opponent: aimx = -dz, aimy = dy
+        # (normalized direction cached from the previous snapshot).
+        aimx, aimy = -self._aim_dz, self._aim_dy
         self._send_nowait({"cmd": "setBotAction", "slot": self.my_slot,
-                           "mx": mx, "my": 0.0, "aimx": aimx, "aimy": 0.0,
+                           "mx": mx, "my": 0.0, "aimx": aimx, "aimy": aimy,
                            "buttons": buttons})
 
     # ---- obs construction ----
@@ -186,6 +197,11 @@ class SFHeadlessEnv(gym.Env):
             # opp predicted relative position at 0.3s (velocity lead — Tier-3
             # aim help). of[4]=opp vy, of[5]=opp vz; mf[4/5]=self vy/vz.
             pred = [dz + (of[5] - mf[5]) * 0.3, dy + (of[4] - mf[4]) * 0.3]
+            # refresh the auto-aim direction (normalized YZ toward opponent)
+            mag = (dz * dz + dy * dy) ** 0.5
+            if mag > 1e-3:
+                self._aim_dz = dz / mag
+                self._aim_dy = dy / mag
         else:
             rel = [0.0, 0.0, 0.0, 0.0]
             pred = [0.0, 0.0]
@@ -279,8 +295,10 @@ class SFHeadlessEnv(gym.Env):
         obs, me, op = self._build_obs(snap)
         self._steps += 1
 
-        self_hp = float(me["hp"]) if me else 0.0
-        opp_hp = float(op["hp"]) if op else 0.0
+        # Missing ent / timed-out snapshot = carry the previous hp (reward-
+        # neutral) instead of 0.0, which fabricated ±1.0 damage swings.
+        self_hp = float(me["hp"]) if me else self._prev_self_hp
+        opp_hp = float(op["hp"]) if op else self._prev_opp_hp
         # Damage-based shaped reward.
         opp_dmg = max(0.0, self._prev_opp_hp - opp_hp)
         self_dmg = max(0.0, self._prev_self_hp - self_hp)
@@ -290,8 +308,12 @@ class SFHeadlessEnv(gym.Env):
 
         terminated = False
         cur_round = snap.get("round") if snap else self._round
-        self_dead = (me is not None and not me["alive"]) or self_hp <= 0
-        opp_dead = (op is not None and not op["alive"]) or opp_hp <= 0
+        # Death requires the ent to be PRESENT (review fix 2026-06-09): a
+        # snapshot timeout (snap=None) or a momentarily missing ent used to
+        # zero both hp's and fabricate a loss — or a +1.0 WIN — polluting both
+        # the reward and the win_mean stage gate.
+        self_dead = me is not None and ((not me["alive"]) or self_hp <= 0)
+        opp_dead = op is not None and ((not op["alive"]) or opp_hp <= 0)
         if opp_dead and not self_dead:
             reward += 1.0; terminated = True
         elif self_dead:
@@ -305,7 +327,15 @@ class SFHeadlessEnv(gym.Env):
             terminated = True  # round advanced (stall/other) — episode boundary
 
         truncated = self._steps >= self.max_steps
-        return obs, float(reward), terminated, truncated, {"round": cur_round}
+        # Telemetry (read by VecMonitor info_keywords at episode end):
+        #   win  = killed the opponent and survived
+        #   fell = our death was a fall (y well below ground level) — vs being
+        #          killed, which matters from stage 1 onward.
+        my_y = float(me.get("y", 0.0)) if me else 0.0
+        info = {"round": cur_round,
+                "win": 1.0 if (opp_dead and not self_dead) else 0.0,
+                "fell": 1.0 if (self_dead and my_y < -3.0) else 0.0}
+        return obs, float(reward), terminated, truncated, info
 
     def close(self):
         for s in (getattr(self, "sock", None), getattr(self, "asock", None)):

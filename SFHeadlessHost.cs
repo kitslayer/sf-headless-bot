@@ -95,6 +95,9 @@ namespace SFHeadlessHost
         internal static float NextMatchDelaySec = 2.0f;
         // Minimum seconds on a map before another kill can advance the round (stops double MapChange / skip).
         internal static float RoundMinPlaySec = 0f;
+        // N× wall-speed for headless training (SF_TIMESCALE env, 1–5; 1 = stock).
+        // Asserted in LateUpdate only when the game itself intends normal speed.
+        internal static float TrainTimeScale = 1f;
         private float _roundAdvanceBlockedUntil = -1f;
         private bool _roundAdvanceQueuedAfterMapLoad;
         private readonly HashSet<int> _deathSlotsHandled = new HashSet<int>();
@@ -210,6 +213,25 @@ namespace SFHeadlessHost
                         var prefix = AccessTools.Method(typeof(Plugin), nameof(InjectInputPrefix));
                         harmony.Patch(updateMethod, prefix: new HarmonyMethod(prefix));
                         Log.LogInfo("Patched Controller.Update with input-injection prefix.");
+                    }
+                    // 2026-06-09 AIM FIX: rigs are spawned with keyBoard=true, and
+                    // stock UserAim() calls RotateTowardsMouse() for keyboard input
+                    // EVERY frame — overriding the Aiming axes entirely. Under xvfb
+                    // the "mouse" is a meaningless fixed point, so injected aim never
+                    // had any effect (empirically: aim was uncorrelated/anti-
+                    // correlated with the intended direction). Skip the mouse path in
+                    // batchmode; stock then applies LookRotation(0, AimY, -AimX) from
+                    // our injected axes — the real couch-gamepad code path.
+                    var rotMouse = AccessTools.Method(ctrlType, "RotateTowardsMouse");
+                    if ((object)rotMouse != null)
+                    {
+                        harmony.Patch(rotMouse, prefix: new HarmonyMethod(
+                            AccessTools.Method(typeof(Plugin), nameof(SkipRotateTowardsMousePrefix))));
+                        Log.LogInfo("Patched Controller.RotateTowardsMouse -> skipped in batchmode (aim comes from injected axes).");
+                    }
+                    else
+                    {
+                        Log.LogWarning("Controller.RotateTowardsMouse not found — injected aim will be mouse-overridden!");
                     }
                 }
                 // [INSTR3] Patch Movement.MoveRight / MoveLeft so we can see
@@ -1616,6 +1638,11 @@ namespace SFHeadlessHost
         // Generic skip-prefix: return false to skip the original method.
         internal static bool SkipPrefix() => false;
 
+        // Skip Controller.RotateTowardsMouse in batchmode (keyboard-typed rigs
+        // would otherwise have their aim overridden by the meaningless xvfb
+        // mouse every frame — see the aim-fix patch install for details).
+        internal static bool SkipRotateTowardsMousePrefix() => !_batchModeHost;
+
         // Headless oracle has NO Steam: the stock IsP2PPacketAvailable always
         // throws "Steamworks is not initialized" (via TestIfAvailableClient),
         // and ListenForPackages can also NullRef on a null channel — both every
@@ -1816,6 +1843,27 @@ namespace SFHeadlessHost
 
         private int _updateErrorTicks;
         private string _updateErrorFirstStackTrace;
+
+        // SF_TIMESCALE (2026-06-09): run the headless sim at N× wall speed for
+        // training throughput. Physics is IDENTICAL per game-second (Unity just
+        // runs more FixedUpdates of the same fixedDeltaTime per wall-second).
+        // The game's TimeHandler.Update rewrites Time.timeScale EVERY frame
+        // (managerTime normally 1, lerped to 0 for the stock round-end slowmo,
+        // pauseTime for pause), so we assert our scale in LateUpdate (runs
+        // after TimeHandler) and ONLY when the game intends normal speed —
+        // stock slowmo/pause behavior is preserved exactly.
+        private void LateUpdate()
+        {
+            if (!_batchModeHost || TrainTimeScale <= 1f) return;
+            try
+            {
+                if (TimeHandler.pauseTime == 1f && TimeHandler.managerTime == 1f
+                    && Time.timeScale != TrainTimeScale)
+                    Time.timeScale = TrainTimeScale;
+            }
+            catch { }
+        }
+
         private void Update()
         {
             try
@@ -6298,6 +6346,8 @@ namespace SFHeadlessHost
                 var blockType = AccessTools.TypeByName("BlockHandler");
                 var aimHelperType = AccessTools.TypeByName("AimTargetHelper");
                 var weaponTypeT = AccessTools.TypeByName("Weapon");
+                var ctrlTypeT = AccessTools.TypeByName("Controller");
+                var aimerF = ((object)ctrlTypeT != null) ? AccessTools.Field(ctrlTypeT, "aimer") : null;
                 var hpF = ((object)hhType != null) ? AccessTools.Field(hhType, "health") : null;
                 var deadF = ((object)ciType != null) ? AccessTools.Field(ciType, "isDead") : null;
                 var weaponF = ((object)fightingType != null) ? AccessTools.Field(fightingType, "weapon") : null;
@@ -6359,7 +6409,21 @@ namespace SFHeadlessHost
                             if (armed && (object)sinceShotF != null) { try { sinceShot = (float)sinceShotF.GetValue(wpn); } catch { } }
                         }
                         if ((object)blockType != null) { var bh = rig.GetComponentInChildren(blockType); if ((object)bh != null && (object)isBlockingF != null) blocking = (bool)isBlockingF.GetValue(bh); }
-                        if ((object)aimHelperType != null) { var ah = rig.GetComponentInChildren(aimHelperType) as Component; if ((object)ah != null) { var fwd = ah.transform.forward; aimZ = fwd.z; aimY = fwd.y; } }
+                        // Aim: prefer Controller.aimer — the transform stock
+                        // UserAim() actually writes in BOTH the unarmed and the
+                        // gradual-weapon branches (AimTargetHelper is only set on
+                        // the gradual branch and goes stale for unarmed rigs).
+                        bool gotAim = false;
+                        if ((object)aimerF != null && (object)ctrlTypeT != null)
+                        {
+                            var ctrlComp = rig.GetComponentInChildren(ctrlTypeT) as Component;
+                            if ((object)ctrlComp != null)
+                            {
+                                var aimT = aimerF.GetValue(ctrlComp) as Transform;
+                                if ((object)aimT != null) { var fwd = aimT.forward; aimZ = fwd.z; aimY = fwd.y; gotAim = true; }
+                            }
+                        }
+                        if (!gotAim && (object)aimHelperType != null) { var ah = rig.GetComponentInChildren(aimHelperType) as Component; if ((object)ah != null) { var fwd = ah.transform.forward; aimZ = fwd.z; aimY = fwd.y; } }
                     }
                     catch { }
                     if (!first) _sb.Append(",");
@@ -7101,8 +7165,10 @@ namespace SFHeadlessHost
                 NextMatchDelaySec = fv;
             if (float.TryParse(Environment.GetEnvironmentVariable("SF_ROUND_MIN_PLAY"), out fv) && fv >= 3f && fv <= 60f)
                 RoundMinPlaySec = fv;
-            if (float.TryParse(Environment.GetEnvironmentVariable("SF_PRE_COMBAT_DELAY"), out fv) && fv >= 1f && fv <= 10f)
+            if (float.TryParse(Environment.GetEnvironmentVariable("SF_PRE_COMBAT_DELAY"), out fv) && fv >= 0.3f && fv <= 10f)
                 OraclePreCombatGraceSec = fv;
+            if (float.TryParse(Environment.GetEnvironmentVariable("SF_TIMESCALE"), out fv) && fv >= 1f && fv <= 5f)
+                TrainTimeScale = fv;
 
             // SFGYM_BOT_SLOTS=0,1 → auto-spawn in-process scripted bots in those
             // player slots (0..3). Comma-separated. Empty/unset = disabled.
@@ -7140,7 +7206,7 @@ namespace SFHeadlessHost
                 }
                 botSlotStr = sb.ToString();
             }
-            Log.LogInfo($"Config: BindPort={BindPort} BridgePort={BridgePort} InitialScene={InitialScene} Verbose={Verbose} RoundEndDelay={RoundEndDelaySec:0.0}s NextMatchDelay={NextMatchDelaySec:0.0}s RoundMinPlay={RoundMinPlaySec:0.0}s PreCombatGrace={OraclePreCombatGraceSec:0.0}s AutoSpawnBotSlots={botSlotStr}");
+            Log.LogInfo($"Config: BindPort={BindPort} BridgePort={BridgePort} InitialScene={InitialScene} Verbose={Verbose} RoundEndDelay={RoundEndDelaySec:0.0}s NextMatchDelay={NextMatchDelaySec:0.0}s RoundMinPlay={RoundMinPlaySec:0.0}s PreCombatGrace={OraclePreCombatGraceSec:0.0}s TimeScale={TrainTimeScale:0.0}x AutoSpawnBotSlots={botSlotStr}");
         }
 
         // Harmony postfix on NetworkSocketServer ctor. The stock ctor sets

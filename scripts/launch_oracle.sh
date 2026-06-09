@@ -65,6 +65,11 @@ export SF_EXCLUDE_MAPS="${SF_EXCLUDE_MAPS:-103}"
 # Pin all rounds to one scene for consistent RL training (empty = random).
 export SF_FIXED_MAP="${SF_FIXED_MAP:-}"
 export SF_BOT_STALL_SECS="${SF_BOT_STALL_SECS:-}"
+# Training-throughput knobs (2026-06-09): N× wall-speed (physics identical per
+# game-second) + trimmed between-round dead time. Empty = host defaults.
+export SF_TIMESCALE="${SF_TIMESCALE:-}"
+export SF_PRE_COMBAT_DELAY="${SF_PRE_COMBAT_DELAY:-}"
+export SF_NEXT_MATCH_DELAY="${SF_NEXT_MATCH_DELAY:-}"
 
 ULOG="$BOTDIR/logs/oracle${I}-unity.log"
 echo "[launch_oracle] instance=$I port=$SFHEADLESS_PORT bridge=$SFHEADLESS_BRIDGEPORT bots=$SFGYM_BOT_SLOTS pfx=$STEAM_COMPAT_DATA_PATH log=$SFHEADLESS_LOGFILE"
