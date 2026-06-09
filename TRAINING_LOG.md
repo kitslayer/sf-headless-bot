@@ -181,3 +181,39 @@ finally stops the falling. (Commit 001b8f2.)
 
 ⚠ User flagged a *possible deeper issue with the headless build itself* — if the
 perception upgrade still doesn't let it beat a dummy, investigate that next.
+
+## 2026-06-09 — v5: THE AIM BUG (root cause of everything), + throughput
+
+**The user's "something fundamentally wrong" instinct was right.** Strategy
+review found and fixed the deepest bug of the project: **the agent could never
+aim.** Chain: rigs are spawned `keyBoard=true` → stock `Controller.UserAim()`
+calls `RotateTowardsMouse()` every frame for keyboard input → injected Aiming
+axes were overridden by the position of the meaningless xvfb mouse. Measured
+live: aim-at-opponent correlation ~50% (= chance) under the old env, 0% (perfect
+anti-correlation) once the env sent opponent-relative values. Every prior run
+(v1 22-dim through v4 72-dim, ~4M steps) trained with "fire" disconnected from
+"hit" — kills happened only by accident. This explains the eternal negative
+plateau vs a stationary dummy far better than tuning or perception ever could.
+
+Fixes (subagent-reviewed, then verified live: **aim-at-opponent 50/50 = 100%**):
+- host: skip-prefix `Controller.RotateTowardsMouse` in batchmode → the stock
+  couch-gamepad path applies our injected axes (`LookRotation(0, AimY, −AimX)`).
+- env: true auto-aim — `aimx=−dz, aimy=dy` (normalized, from latest snapshot).
+- host: snapshot `aimz/aimy` now read `Controller.aimer` (written by stock in
+  both unarmed + gradual branches; AimTargetHelper goes stale when unarmed).
+
+Also in v5 (throughput + measurement):
+- **SF_TIMESCALE=2** — TimeHandler-aware LateUpdate assert (stock slowmo/pause
+  preserved exactly); trainer polls 40 Hz wall = constant 20 Hz game-time
+  decisions. Physics identical per game-second.
+- Dead-time trim: pre-combat grace 2.0→0.5 s, next-match delay 2.0→0.5 s (the
+  fps ceiling was reset-bound: every episode end blocked the sync vec-env for
+  the full round-advance; snapshot RPC itself measures ~0 ms).
+- **win_mean / fell_mean** in the training log (VecMonitor info_keywords) — the
+  real stage gates. Review fixes: missing-ent snapshots no longer fabricate
+  wins/damage; VecNormalize resume filename now actually matches (every prior
+  auto-resume silently reset normalization stats).
+
+Stage-0 gate (advance when): win_mean ≥ 0.8 sustained AND fell_mean ≤ 0.1.
+Then stage 0.5 (moving passive opponent) → stage 1 (scripted) → stage 2
+(self-play league). Fresh run from 0 (prior runs archived in models/archive_*).
