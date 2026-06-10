@@ -260,3 +260,12 @@ weapons+pickup live, complete game loop. Learning at this point: **rew5 +0.285
 (best ever), falls 2-5%, win 5-10% and climbing**, fps ~10-12 (reset-bound;
 next lever = 6 instances, needs port-scheme change — deferred). Self-healing
 stack: watchdog (instances) + stall-guard supervisor (trainer) + 8k checkpoints.
+
+## 2026-06-10 05:34 — v6 crosses 100k (overnight, untouched)
+
+103k steps on the final stable config. Reward has held positive most of the
+night (rew5 band roughly −0.18 ↔ +0.44, centered ~+0.2 — vs v1-v4 which never
+held positive at all), falls steady 2-7%, win oscillating 3-14%. Fleet: the
+known batchmode hangs rotate through instances; watchdog auto-recovers each
+(~30 restarts over the night), trainer never wedged since the 8k-checkpoint +
+stall=15s pass. Zero manual interventions since 03:27.
