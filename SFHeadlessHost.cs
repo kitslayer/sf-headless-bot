@@ -2152,6 +2152,7 @@ namespace SFHeadlessHost
         private static FieldInfo _thPauseF, _thManagerF;
         private static bool _thLookupDone;
         private float _clockFrozenSince = -1f;   // realtime when a frozen clock was first seen with rigs present
+        private float _lastWedgeBreakAt = -999f; // realtime of the last wedge break (burst-mode window)
         private void LateUpdate()
         {
             if (!_batchModeHost) return;
@@ -2185,17 +2186,25 @@ namespace SFHeadlessHost
                 // recomputes timeScale=1 from these fields every frame).
                 if (Time.timeScale < 0.01f && SlotToRig.Count > 0)
                 {
+                    // Burst mode: the first wedge waits 5s (don't fight a
+                    // legitimate transient pause), but when the freeze is
+                    // recurring per-round (Ice11: every map-entry re-freezes
+                    // and the stock restore path is dead), waiting 5s every
+                    // ~18s round taxes ~25% of wall time — break repeats
+                    // after 2s while in the burst window.
+                    float thresh = (Time.realtimeSinceStartup - _lastWedgeBreakAt < 120f) ? 2f : 5f;
                     if (_clockFrozenSince < 0f)
                         _clockFrozenSince = Time.realtimeSinceStartup;
-                    else if (Time.realtimeSinceStartup - _clockFrozenSince > 5f)
+                    else if (Time.realtimeSinceStartup - _clockFrozenSince > thresh)
                     {
                         float pause0 = (float)_thPauseF.GetValue(null);
                         float mgr0 = (float)_thManagerF.GetValue(null);
                         _thPauseF.SetValue(null, 1f);
                         _thManagerF.SetValue(null, 1f);
                         Time.timeScale = (TrainTimeScale > 1f) ? TrainTimeScale : 1f;
-                        Log.LogWarning($"[time] WEDGE-BREAKER: clock frozen >5s in-match (pause={pause0:0.###} manager={mgr0:0.###}, scene={SceneManager.GetActiveScene().name}) — forced both to 1.");
+                        Log.LogWarning($"[time] WEDGE-BREAKER: clock frozen >{thresh:0}s in-match (pause={pause0:0.###} manager={mgr0:0.###}, scene={SceneManager.GetActiveScene().name}) — forced both to 1.");
                         _clockFrozenSince = -1f;
+                        _lastWedgeBreakAt = Time.realtimeSinceStartup;
                     }
                 }
                 else
