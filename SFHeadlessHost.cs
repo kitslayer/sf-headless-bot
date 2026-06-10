@@ -147,6 +147,16 @@ namespace SFHeadlessHost
             }
             Log.LogInfo($"{PluginName} {PluginVersion}: batchmode detected, bootstrapping headless host.");
             _batchModeHost = true;
+            // 2026-06-10: cap the headless frame rate. Under xvfb the game
+            // renders uncapped (~250% CPU/instance for frames nobody sees).
+            // 60fps matches normal play; FixedUpdate physics is unaffected.
+            try
+            {
+                QualitySettings.vSyncCount = 0;
+                Application.targetFrameRate = 60;
+                Log.LogInfo("[batch] Application.targetFrameRate=60 (uncapped xvfb rendering wasted ~2.5 cores/instance).");
+            }
+            catch { }
             InstallMapTerrainAuthorityPatches();
             EnsureOracleP2PNetworkReady("batchmode-boot");
 
@@ -2032,7 +2042,12 @@ namespace SFHeadlessHost
         private static bool _thLookupDone;
         private void LateUpdate()
         {
-            if (!_batchModeHost || TrainTimeScale <= 1f) return;
+            if (!_batchModeHost) return;
+            // Frame cap re-assert: OptionsHolder/SetTargetFrameRate overwrite
+            // targetFrameRate from settings (uncapped headless = ~2.5 wasted
+            // cores/instance rendering for nobody).
+            if (Application.targetFrameRate != 60) Application.targetFrameRate = 60;
+            if (TrainTimeScale <= 1f) return;
             if (!_thLookupDone)
             {
                 _thLookupDone = true;

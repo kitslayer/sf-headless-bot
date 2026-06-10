@@ -39,7 +39,7 @@ while true; do
     ( source "$VENV/bin/activate"
       cd "$BOTDIR/python"
       nohup python train_headless_ppo.py --instances "$INSTANCES" --base-bridge 1341 \
-        --steps "$STEPS" --save-every 20000 >> "$BOTDIR/logs/train.log" 2>&1 ) &
+        --steps "$STEPS" --save-every 8000 >> "$BOTDIR/logs/train.log" 2>&1 ) &
     anchor_ts=-1; anchor_time=$(date +%s)   # reset stall tracking for the fresh trainer
     sleep 10
   else
