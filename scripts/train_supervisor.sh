@@ -47,7 +47,12 @@ while true; do
     cur_ts=$(grep total_timesteps logs/train.log 2>/dev/null | tail -1 | grep -oE '[0-9]+')
     now=$(date +%s)
     if [ -n "$cur_ts" ]; then
-      if [ "$anchor_ts" -lt 0 ] || [ "$((cur_ts - anchor_ts))" -ge "$MIN_PROG" ]; then
+      # cur_ts < anchor_ts means the timestep counter went BACKWARD: a fresh
+      # run (or resume from an older checkpoint) in the appended train.log.
+      # Re-anchor instead of letting the negative delta read as "no progress"
+      # — that false-killed a healthy fresh trainer 900s into v7 (2026-06-10:
+      # anchor was the OLD run's 257k; new run counted 0→10k, never ≥ anchor).
+      if [ "$anchor_ts" -lt 0 ] || [ "$cur_ts" -lt "$anchor_ts" ] || [ "$((cur_ts - anchor_ts))" -ge "$MIN_PROG" ]; then
         anchor_ts="$cur_ts"; anchor_time="$now"             # progressing → healthy
       elif [ "$((now - anchor_time))" -ge "$WINDOW" ]; then
         echo "[train-sup $(date '+%H:%M:%S')] trainer WEDGED: <${MIN_PROG} steps in ${WINDOW}s (stuck ~${cur_ts}) — killing to force resume-from-checkpoint"
