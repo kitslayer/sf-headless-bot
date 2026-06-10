@@ -323,6 +323,19 @@ namespace SFHeadlessHost
                     (object)gmTypeP != null ? AccessTools.Method(gmTypeP, "SpawnRandomWeapon") : null,
                     prefix: nameof(SpawnRandomWeaponPrefix));
 
+                // Batchmode: replace the cosmetic 3-2-1 countdown with its end
+                // state, synchronously. Stock CountDownCoroutine freezes time
+                // (managerTime=0), drives UI (CountDownHandler/MapInfo), then
+                // restores managerTime=1 after 1s realtime — but in batchmode
+                // those UI calls can throw (observed on Ice11/57), killing the
+                // coroutine mid-freeze with mPlayingCountdown latched true:
+                // the clock stays 0 forever and every retry no-ops. Headless
+                // pacing is handled by SF_PRE_COMBAT_DELAY; the countdown
+                // freeze exists only for the UI, so skip it wholesale.
+                TryPatch(harmony, "GameManager.StartCountDown (batch: skip coroutine, apply end state)",
+                    (object)gmTypeP != null ? AccessTools.Method(gmTypeP, "StartCountDown") : null,
+                    prefix: nameof(StartCountDownBatchPrefix));
+
                 // P2PPackageHandler.SendP2PPacketToUser has two overloads;
                 // we want the CSteamID one. AccessTools.Method without a
                 // typeArray returns the first match which may be the wrong
@@ -1797,6 +1810,40 @@ namespace SFHeadlessHost
                 Log.LogWarning($"RequestWeaponPickUpLocalPrefix: {inner0}");
             }
             return false;   // never run the broken stock network path in batchmode
+        }
+
+        // GameManager.StartCountDown prefix — batchmode only. The stock
+        // CountDownCoroutine is UI-driven (freeze clock → 3-2-1 → unfreeze);
+        // headless, its UI calls can throw and kill the coroutine mid-freeze
+        // (managerTime stuck 0, mPlayingCountdown latched true — the Ice11
+        // clock wedge). Apply the end state synchronously and skip it.
+        internal static bool StartCountDownBatchPrefix(object __instance)
+        {
+            if (!_batchModeHost) return true;   // real clients keep stock behavior
+            try
+            {
+                var gmT = AccessTools.TypeByName("GameManager");
+                var thT = AccessTools.TypeByName("TimeHandler");
+                if ((object)gmT != null)
+                {
+                    var inFightF = AccessTools.Field(gmT, "inFight");
+                    if ((object)inFightF != null) inFightF.SetValue(null, true);
+                    var playingF = AccessTools.Field(gmT, "mPlayingCountdown");
+                    if ((object)playingF != null && (object)__instance != null)
+                        playingF.SetValue(__instance, false);
+                }
+                if ((object)thT != null)
+                {
+                    var mtF = AccessTools.Field(thT, "managerTime");
+                    if ((object)mtF != null) mtF.SetValue(null, 1f);
+                }
+                Log.LogInfo("[time] StartCountDown (batch): applied end state synchronously (inFight=true, managerTime=1).");
+            }
+            catch (Exception e)
+            {
+                Log.LogWarning($"StartCountDownBatchPrefix: {e.Message}");
+            }
+            return false;   // skip the stock coroutine entirely
         }
 
         // Shared local-pickup core: nearest (unarmed, alive rig | pickup-able
