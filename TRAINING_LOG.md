@@ -250,3 +250,13 @@ Verified live: 52 pickups, agent armed ~5% of samples (brief windows = stock
 ammo dynamics — empty gun auto-drops). **The complete game loop now exists for
 the first time**: perceive (72-dim) → aim (100%) → move → pick up → shoot.
 Fresh run from 0. (Commits 9ab810e..c89114b; subagent-reviewed.)
+
+## 2026-06-10 ~03:45 — overnight steady state (v6 final config)
+
+Config locked for the night: stock 1× physics (user timescale warning honored —
+measurement showed the bottleneck is wall-clock reset time anyway), stall 15s
+(8s tripled scene-reload churn → fleet-wide hang cycling), checkpoints every 8k,
+weapons+pickup live, complete game loop. Learning at this point: **rew5 +0.285
+(best ever), falls 2-5%, win 5-10% and climbing**, fps ~10-12 (reset-bound;
+next lever = 6 instances, needs port-scheme change — deferred). Self-healing
+stack: watchdog (instances) + stall-guard supervisor (trainer) + 8k checkpoints.
