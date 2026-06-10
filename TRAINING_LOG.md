@@ -230,3 +230,23 @@ Then stage 0.5 (moving passive opponent) → stage 1 (scripted) → stage 2
 One hour of v5 (true aim + 72-dim perception + 2× timescale, ~25-34 fps) beat
 ~4M steps of v1–v4 combined. Falls collapsing (void-sense), wins climbing
 (aim), episodes shortening (faster kills). Stage-0 gate: win ≥ 0.8, fell ≤ 0.1.
+
+## 2026-06-10 — v6: WEAPONS BECOME REAL (the second "fundamentally wrong" bug)
+
+Win plateaued ~12% on v5; probe showed agent armed **0%** with the dummy at
+100hp at most round ends. Root-caused a STACK of headless breaks:
+1. **No physical weapons ever existed**: stock `SpawnWeapon` only broadcasts a
+   packet; a stock listen-server's own client handler instantiates it, but this
+   host never looped the packet back. 1000+ "sky spawn" log lines, zero weapons
+   in-world, ever. Fix: build the same payload + call `OnWeaponSpawned(byte[])`
+   locally.
+2. **Pickup chain dead**: BodyPart.OnCollisionEnter NREs at mNetworkPlayer and
+   RequestWeaponPickUp's server path dies on empty registries. Fix:
+   `TickAutoPickup` — unarmed+alive rig within 2.0m of a settled weapon arms
+   via the replicated stock local branch (Fighting.PickUpWeapon + destroy).
+3. Sky-drop cadence densified (first 1s, every 3-5s) for stage-0 practice.
+
+Verified live: 52 pickups, agent armed ~5% of samples (brief windows = stock
+ammo dynamics — empty gun auto-drops). **The complete game loop now exists for
+the first time**: perceive (72-dim) → aim (100%) → move → pick up → shoot.
+Fresh run from 0. (Commits 9ab810e..c89114b; subagent-reviewed.)
