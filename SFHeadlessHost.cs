@@ -2104,6 +2104,7 @@ namespace SFHeadlessHost
         // game types; learned the hard way 2026-06-09).
         private static FieldInfo _thPauseF, _thManagerF;
         private static bool _thLookupDone;
+        private float _clockFrozenSince = -1f;   // realtime when a frozen clock was first seen with rigs present
         private void LateUpdate()
         {
             if (!_batchModeHost) return;
@@ -2111,7 +2112,6 @@ namespace SFHeadlessHost
             // targetFrameRate from settings (uncapped headless = ~2.5 wasted
             // cores/instance rendering for nobody).
             if (Application.targetFrameRate != 60) Application.targetFrameRate = 60;
-            if (TrainTimeScale <= 1f) return;
             if (!_thLookupDone)
             {
                 _thLookupDone = true;
@@ -2126,10 +2126,42 @@ namespace SFHeadlessHost
             if ((object)_thPauseF == null || (object)_thManagerF == null) return;
             try
             {
-                float pause = (float)_thPauseF.GetValue(null);
-                float mgr = (float)_thManagerF.GetValue(null);
-                if (pause == 1f && mgr == 1f && Time.timeScale != TrainTimeScale)
-                    Time.timeScale = TrainTimeScale;
+                // CLOCK-WEDGE BREAKER (2026-06-10, found on Ice11/scene 57):
+                // some maps' transition freeze sets TimeHandler.managerTime=0
+                // and the ramp-back coroutine never runs headless, leaving
+                // Time.timeScale at 0 FOREVER — no physics, no countdown, no
+                // stall-advance; rigs pinned at spawn, reward flat 0. Stock
+                // pauses are transient (round slowmo / map change, a few
+                // seconds), so a frozen clock with rigs spawned for >5 REAL
+                // seconds is always the wedge. Restore the game's own
+                // normal-speed state (the stock TimeHandler.Update then
+                // recomputes timeScale=1 from these fields every frame).
+                if (Time.timeScale < 0.01f && SlotToRig.Count > 0)
+                {
+                    if (_clockFrozenSince < 0f)
+                        _clockFrozenSince = Time.realtimeSinceStartup;
+                    else if (Time.realtimeSinceStartup - _clockFrozenSince > 5f)
+                    {
+                        float pause0 = (float)_thPauseF.GetValue(null);
+                        float mgr0 = (float)_thManagerF.GetValue(null);
+                        _thPauseF.SetValue(null, 1f);
+                        _thManagerF.SetValue(null, 1f);
+                        Time.timeScale = (TrainTimeScale > 1f) ? TrainTimeScale : 1f;
+                        Log.LogWarning($"[time] WEDGE-BREAKER: clock frozen >5s in-match (pause={pause0:0.###} manager={mgr0:0.###}, scene={SceneManager.GetActiveScene().name}) — forced both to 1.");
+                        _clockFrozenSince = -1f;
+                    }
+                }
+                else
+                {
+                    _clockFrozenSince = -1f;
+                }
+                if (TrainTimeScale > 1f)
+                {
+                    float pause = (float)_thPauseF.GetValue(null);
+                    float mgr = (float)_thManagerF.GetValue(null);
+                    if (pause == 1f && mgr == 1f && Time.timeScale != TrainTimeScale)
+                        Time.timeScale = TrainTimeScale;
+                }
             }
             catch { }
         }
