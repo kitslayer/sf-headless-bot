@@ -269,3 +269,10 @@ held positive at all), falls steady 2-7%, win oscillating 3-14%. Fleet: the
 known batchmode hangs rotate through instances; watchdog auto-recovers each
 (~30 restarts over the night), trainer never wedged since the 8k-checkpoint +
 stall=15s pass. Zero manual interventions since 03:27.
+
+## 2026-06-10 08:22 — 200k overnight
+
+200k steps, zero manual interventions since 03:27. Reward firmly positive
+(rew5 band +0.09 ↔ +0.44, typically ~+0.25), falls 1-6%, win 3-14% oscillating.
+~55 watchdog instance-recoveries overnight, all clean; trainer never wedged
+under the 8k-checkpoint + stall=15 config.
