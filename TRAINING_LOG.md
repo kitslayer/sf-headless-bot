@@ -217,3 +217,16 @@ Also in v5 (throughput + measurement):
 Stage-0 gate (advance when): win_mean ≥ 0.8 sustained AND fell_mean ≤ 0.1.
 Then stage 0.5 (moving passive opponent) → stage 1 (scripted) → stage 2
 (self-play league). Fresh run from 0 (prior runs archived in models/archive_*).
+
+## 2026-06-10 — v5 first hour: IT LEARNS
+
+| steps | win_mean | fell_mean | ep_rew |
+|---|---|---|---|
+| 10k | 0.018 | 0.053 | −0.27 |
+| 37k | 0.07 | 0.16 | −0.14 |
+| 49k | 0.12 | 0.14 | −0.01 |
+| 61k | 0.13 | **0.05** | **+0.40 ← first positive in project history** |
+
+One hour of v5 (true aim + 72-dim perception + 2× timescale, ~25-34 fps) beat
+~4M steps of v1–v4 combined. Falls collapsing (void-sense), wins climbing
+(aim), episodes shortening (faster kills). Stage-0 gate: win ≥ 0.8, fell ≤ 0.1.
