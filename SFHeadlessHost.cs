@@ -1712,6 +1712,70 @@ namespace SFHeadlessHost
             // dense enough for stage-0 learning.
             try { TryLocalPickupSweep(2.0f, null, 0); }
             catch { }
+            if ((_autoPickupTickCounter % 300) != 0) return;   // rest ~every 5s
+            // On a fixed training map rounds advance WITHOUT a scene reload, so
+            // unclaimed sky-drops accumulate forever (330+ observed) — physics
+            // and scan drag stock play never has (players pick up; reloads
+            // clear). Keep the newest 24, destroy the oldest beyond that.
+            try { CapGroundWeapons(24); }
+            catch { }
+            // DSF comp ruleset: HP 100, NO regen. Stock regen heals 10 HP/s,
+            // erasing the agent's damage during every ammo/pickup gap. regen
+            // comes from PlayerPrefs (unset in our prefixes → 0) but re-assert
+            // periodically so no later LoadOptions/packet path can flip it.
+            // HP guard: TakeDamage scales by 100/HP — HP=0 would make every
+            // hit infinite damage.
+            try
+            {
+                var ohT = AccessTools.TypeByName("OptionsHolder");
+                if ((object)ohT != null)
+                {
+                    var regenF = AccessTools.Field(ohT, "regen");
+                    if ((object)regenF != null && (int)regenF.GetValue(null) != 0) regenF.SetValue(null, 0);
+                    var hpFld = AccessTools.Field(ohT, "HP");
+                    if ((object)hpFld != null && (int)hpFld.GetValue(null) < 1) hpFld.SetValue(null, 100);
+                }
+            }
+            catch { }
+        }
+
+        // Destroy the oldest non-permanent ground weapons beyond `max`.
+        // Age = WeaponPickUp.counter (seconds since spawn, counts up).
+        private static void CapGroundWeapons(int max)
+        {
+            var wpT = AccessTools.TypeByName("WeaponPickUp");
+            if ((object)wpT == null) return;
+            var arr = UnityEngine.Object.FindObjectsOfType(wpT);
+            if (arr == null || arr.Length <= max) return;
+            var counterF = AccessTools.Field(wpT, "counter");
+            var unEndingF = AccessTools.Field(wpT, "unEnding");
+            var flyUpF = AccessTools.Field(wpT, "flyUpAfter");
+            var list = new List<KeyValuePair<float, Component>>();
+            for (int i = 0; i < arr.Length; i++)
+            {
+                var w = arr[i] as Component;
+                if ((object)w == null) continue;
+                bool unEnding = false; float age = 0f; float flyUp = 0f;
+                try
+                {
+                    if ((object)unEndingF != null) unEnding = (bool)unEndingF.GetValue(w);
+                    if ((object)counterF != null) age = (float)counterF.GetValue(w);
+                    if ((object)flyUpF != null) flyUp = (float)flyUpF.GetValue(w);
+                }
+                catch { }
+                if (unEnding) continue;   // map-permanent weapons stay
+                // Map-PRESET ground weapons (IsGroundWeapon ⇔ flyUpAfter=+inf)
+                // are part of the map, oldest by counter, and never respawn on
+                // a no-reload training map — exempt them from the cap.
+                if (float.IsPositiveInfinity(flyUp)) continue;
+                list.Add(new KeyValuePair<float, Component>(age, w));
+            }
+            if (list.Count <= max) return;
+            list.Sort((a, b) => b.Key.CompareTo(a.Key));   // oldest first
+            int kill = list.Count - max;
+            for (int i = 0; i < kill; i++)
+                UnityEngine.Object.Destroy(list[i].Value.gameObject);
+            Log.LogInfo($"[weapons] ground-weapon cap: destroyed {kill} oldest (had {arr.Length}, cap {max})");
         }
 
         // 2026-06-10 PICKUP FIX (see patch-install comment). Stock
@@ -3974,7 +4038,7 @@ namespace SFHeadlessHost
                 bw.Write((ushort)0);          // weaponCount
                 bw.Write((byte)0);            // mapToggle
                 bw.Write((byte)100);          // health
-                bw.Write((byte)1);            // regen
+                bw.Write((byte)0);            // regen — DSF comp ruleset: no regen
                 bw.Write((byte)1);            // weaponSpawnRate
 
                 byte[] body = ms.ToArray();
@@ -3989,7 +4053,8 @@ namespace SFHeadlessHost
             SendSfPacket(cli.Addr, PktWorkshopMapsLoaded, new byte[] { 0, 0 }, cli.SteamID, 1);
             // OptionsChanged: 4 bytes [maps, health, regen, weaponSpawnRate].
             // weaponSpawnRate=2 stops the client from requesting weapon spawns.
-            SendSfPacket(cli.Addr, PktOptionsChanged, new byte[] { 0, 100, 1, 2 }, cli.SteamID, 0);
+            // regen=0 — DSF comp ruleset (and matches host-side OptionsHolder).
+            SendSfPacket(cli.Addr, PktOptionsChanged, new byte[] { 0, 100, 0, 2 }, cli.SteamID, 0);
             Log.LogInfo($"[SF] Post-init bundle sent (WorkshopMapsLoaded + OptionsChanged).");
         }
 
@@ -6712,6 +6777,68 @@ namespace SFHeadlessHost
                             _sb.Append("[").Append(pp.z.ToString("0.00", ci)).Append(",").Append(pp.y.ToString("0.00", ci))
                                .Append(",").Append(fwd.z.ToString("0.000", ci)).Append(",").Append(fwd.y.ToString("0.000", ci)).Append("]");
                             pc++;
+                        }
+                    }
+                }
+                catch { }
+                _sb.Append("]");
+                // Ground weapons: up to 6 settled, pickup-able WeaponPickUps
+                // nearest to any spawned rig, as [z,y]. Gives the policy a
+                // gradient toward arming itself — DSF rules have auto-pickup
+                // OFF, so walking to a weapon is learned behavior; without
+                // these the agent is blind to where weapons are.
+                _sb.Append(",\"wps\":[");
+                try
+                {
+                    var wpT2 = AccessTools.TypeByName("WeaponPickUp");
+                    if ((object)wpT2 != null)
+                    {
+                        var counterF2 = AccessTools.Field(wpT2, "counter");
+                        var cantF2 = AccessTools.Field(wpT2, "cantBePickledUpFor");
+                        var warr = UnityEngine.Object.FindObjectsOfType(wpT2);
+                        // Rig position = hip BodyPart, NOT the root transform —
+                        // the root never moves under SF's physics (review fix:
+                        // ranking against frozen spawn positions would drop the
+                        // weapon actually nearest a roaming rig from the top-6).
+                        var rigPos = new List<Vector3>();
+                        foreach (var kv2 in SlotToRig)
+                        {
+                            if ((object)kv2.Value == null) continue;
+                            Vector3 rpos = kv2.Value.transform.position;
+                            if ((object)bodyPartType != null)
+                            {
+                                var rbp = kv2.Value.GetComponentInChildren(bodyPartType) as Component;
+                                if ((object)rbp != null) rpos = rbp.transform.position;
+                            }
+                            rigPos.Add(rpos);
+                        }
+                        var cand = new List<KeyValuePair<float, Vector3>>();
+                        for (int i = 0; i < warr.Length; i++)
+                        {
+                            var w = warr[i] as Component;
+                            if ((object)w == null) continue;
+                            try
+                            {
+                                if ((object)counterF2 != null && (float)counterF2.GetValue(w) <= 0.3f) continue;
+                                if ((object)cantF2 != null && (float)cantF2.GetValue(w) >= 0f) continue;
+                            }
+                            catch { }
+                            var wpp = w.transform.position;
+                            float dmin = float.MaxValue;
+                            for (int r = 0; r < rigPos.Count; r++)
+                            {
+                                float d = Vector3.Distance(rigPos[r], wpp);
+                                if (d < dmin) dmin = d;
+                            }
+                            cand.Add(new KeyValuePair<float, Vector3>(dmin, wpp));
+                        }
+                        cand.Sort((a, b) => a.Key.CompareTo(b.Key));
+                        int wn = Math.Min(6, cand.Count);
+                        for (int i = 0; i < wn; i++)
+                        {
+                            if (i > 0) _sb.Append(",");
+                            _sb.Append("[").Append(cand[i].Value.z.ToString("0.00", ci))
+                               .Append(",").Append(cand[i].Value.y.ToString("0.00", ci)).Append("]");
                         }
                     }
                 }

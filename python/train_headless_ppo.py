@@ -55,7 +55,7 @@ class EpInfoLogger(BaseCallback):
 
     def _on_rollout_end(self) -> None:
         buf = list(self.model.ep_info_buffer or [])
-        for key in ("win", "fell"):
+        for key in ("win", "fell", "arms"):
             vals = [e[key] for e in buf if key in e]
             if vals:
                 self.logger.record(f"rollout/{key}_mean", sum(vals) / len(vals))
@@ -96,7 +96,7 @@ def main():
     print(f"[train] envs on bridge ports {ports} opp_mode={args.opp_mode} "
           f"timescale={ts} poll_hz={poll_hz}")
     venv = SubprocVecEnv([make_env(p, args.opp_mode, poll_hz) for p in ports])
-    venv = VecMonitor(venv, info_keywords=("win", "fell"))
+    venv = VecMonitor(venv, info_keywords=("win", "fell", "arms"))
     # 2026-06-06 tuning: norm_reward=True normalizes returns by a running std,
     # which directly tames the high-variance ±1/kill/fall reward spikes that
     # were destabilizing PPO (oscillated for ~2.8M steps, never converged).

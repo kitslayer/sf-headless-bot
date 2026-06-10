@@ -93,11 +93,13 @@ class SFHeadlessEnv(gym.Env):
         self.asock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.asock.bind(("127.0.0.1", 0))
 
-        # obs: self(19)+opp(19)+rel(4)+opp-pred(2)+void(4)+rayfan(16)+proj(8) = 72
+        # obs: self(19)+opp(19)+rel(4)+opp-pred(2)+void(4)+rayfan(16)+proj(8)
+        #      +weapons(6) = 78
         # self/opp 19 = kinematics(6)+hp/alive/armed(3)+state(10: grounded,
         # ragdolled, swinging, blocking, jump-cd, wall-cd, sinceShot, ammo, aim z/y)
         # rayfan = 16 YZ-plane world-distance rays; proj = 2 nearest projectiles
-        high = np.full(72, np.inf, dtype=np.float32)
+        # weapons = 2 nearest ground weapons rel to self (dz/20, dy/10, present)
+        high = np.full(78, np.inf, dtype=np.float32)
         self.observation_space = spaces.Box(-high, high, dtype=np.float32)
         self.action_space = spaces.MultiDiscrete([3, 2, 2])
 
@@ -105,6 +107,8 @@ class SFHeadlessEnv(gym.Env):
         self._round = None
         self._prev_self_hp = 100.0
         self._prev_opp_hp = 100.0
+        self._prev_armed = False   # pickup-shaping edge detector
+        self._arm_count = 0        # pickups this episode (telemetry)
         # Normalized aim-at-opponent direction, refreshed from each snapshot in
         # _build_obs and sent with every action (aimx==world-z 1:1, verified).
         self._aim_dz = 1.0
@@ -246,7 +250,28 @@ class SFHeadlessEnv(gym.Env):
             for k, (_, rz, ry, fz, fy) in enumerate(scored[:2]):
                 proj_feats[k * 4:k * 4 + 4] = [rz, ry, fz, fy]
 
-        obs = np.array(mf + of + rel + pred + void + rays + proj_feats, dtype=np.float32)
+        # Ground-weapon sense: 2 nearest pickup-able weapons relative to self,
+        # (dz/20, dy/10, present) each. Without these the agent is blind to
+        # weapons and only ever arms by chance — win rate was hard-capped by
+        # rigs idling unarmed while sky-drops landed elsewhere (2026-06-10).
+        wp_feats = [0.0] * 6
+        if me is not None and snap:
+            sz = float(me.get("z", 0.0)); sy = float(me.get("y", 0.0))
+            wscored = []
+            for wp in (snap.get("wps") or []):
+                if len(wp) >= 2:
+                    wdz = float(wp[0]) - sz; wdy = float(wp[1]) - sy
+                    wscored.append((wdz * wdz + wdy * wdy, wdz, wdy))
+            wscored.sort(key=lambda t: t[0])
+            for k, (_, wdz, wdy) in enumerate(wscored[:2]):
+                wp_feats[k * 3:k * 3 + 3] = [
+                    max(-1.0, min(1.0, wdz / 20.0)),
+                    max(-1.0, min(1.0, wdy / 10.0)),
+                    1.0,
+                ]
+
+        obs = np.array(mf + of + rel + pred + void + rays + proj_feats + wp_feats,
+                       dtype=np.float32)
         return obs, me, op
 
     # ---- gym API ----
@@ -276,6 +301,8 @@ class SFHeadlessEnv(gym.Env):
                     self._steps = 0
                     self._prev_self_hp = float(me["hp"])
                     self._prev_opp_hp = float(op["hp"])
+                    self._prev_armed = bool(me.get("armed", False))
+                    self._arm_count = 0
                     return obs, {}
             time.sleep(0.03)
         # Timed out — return whatever we have so training doesn't deadlock.
@@ -285,6 +312,8 @@ class SFHeadlessEnv(gym.Env):
         self._steps = 0
         self._prev_self_hp = float(me["hp"]) if me else 100.0
         self._prev_opp_hp = float(op["hp"]) if op else 100.0
+        self._prev_armed = bool(me.get("armed", False)) if me else False
+        self._arm_count = 0
         return obs, {"reset_timeout": True}
 
     def step(self, action):
@@ -305,6 +334,16 @@ class SFHeadlessEnv(gym.Env):
         reward = (opp_dmg - self_dmg) / 100.0
         self._prev_self_hp = self_hp
         self._prev_opp_hp = opp_hp
+        # Pickup shaping: one-time +0.05 on unarmed→armed. The walk-to-weapon →
+        # damage credit chain is seconds long; this densifies it. Small vs a
+        # kill (+1.0) so it can't dominate, and not exploitable: re-arming
+        # requires having lost the gun (emptied = it auto-drops), which already
+        # costs time and forgone damage.
+        armed_now = bool(me.get("armed", False)) if me else self._prev_armed
+        if armed_now and not self._prev_armed:
+            reward += 0.05
+            self._arm_count += 1
+        self._prev_armed = armed_now
 
         terminated = False
         cur_round = snap.get("round") if snap else self._round
@@ -334,7 +373,10 @@ class SFHeadlessEnv(gym.Env):
         my_y = float(me.get("y", 0.0)) if me else 0.0
         info = {"round": cur_round,
                 "win": 1.0 if (opp_dead and not self_dead) else 0.0,
-                "fell": 1.0 if (self_dead and my_y < -3.0) else 0.0}
+                "fell": 1.0 if (self_dead and my_y < -3.0) else 0.0,
+                # arms = pickups this episode; watches both learning progress
+                # and the +0.05 dump-and-refetch farming surface.
+                "arms": float(self._arm_count)}
         return obs, float(reward), terminated, truncated, info
 
     def close(self):
