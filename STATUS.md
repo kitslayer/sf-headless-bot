@@ -10,7 +10,10 @@ pushed). Stage-0 (agent vs stationary dummy) **demonstrably learns** (ep_rew
 −1.5 → −0.5). It plateaus negative because the agent falls off map edges ~50%
 of episodes — getting it to a *strong* bot is a normal RL tuning loop (map
 choice, reward shaping, opponent curriculum) that's your call. Currently pinned
-to **scene 6 (Desert3)**, the best baseline I found (Ice11/57 regressed). I
+to **scene 57 (Ice11, flat winter)** per Miles (2026-06-10) — the earlier
+"Ice11 regressed" verdict predated the aim fix + weapons existing, so it was
+measuring a broken system. Void box for Ice11: SF_VOID_Y=-2.0, SF_VOID_Z=15.0
+(floor sits at y≈+2.2; set in run/fleet.env, read by the env via _fleet_cfg). I
 stopped auto-churning configs and switched to health-only babysitting. Tuning
 levers + curriculum stages are documented below.
 

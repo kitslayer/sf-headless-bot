@@ -18,6 +18,7 @@ Episode ends when the round advances (someone died / stall timeout) or max_steps
 from __future__ import annotations
 
 import json
+import os
 import socket
 import time
 
@@ -38,8 +39,31 @@ except ImportError:  # fall back to classic gym
 # never beat even a stationary dummy. These give it the SAME edge/floor sense
 # the scripted bot uses. SF playable box (Desert3 / general kill thresholds):
 # kill floor at y<-11.5, horizontal edges at |z|>19.
-_VOID_Y = -11.5          # kill-floor Y
-_VOID_Z = 19.0           # horizontal edge |z|
+def _fleet_cfg(name: str, default: float) -> float:
+    """Map-geometry config: process env wins, then run/fleet.env (the fleet's
+    single source of truth, same pattern as SF_TIMESCALE), then default."""
+    v = os.environ.get(name)
+    if v:
+        try:
+            return float(v)
+        except ValueError:
+            pass
+    try:
+        path = os.path.join(os.path.dirname(__file__), "..", "run", "fleet.env")
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith(f"export {name}="):
+                    val = line.split("=", 1)[1].strip()
+                    if val:
+                        return float(val)
+    except (OSError, ValueError):
+        pass
+    return default
+
+
+_VOID_Y = _fleet_cfg("SF_VOID_Y", -11.5)   # kill-floor Y (Desert3 default)
+_VOID_Z = _fleet_cfg("SF_VOID_Z", 19.0)    # horizontal edge |z| (Desert3 default)
 _VOID_SPAN = 2.0 * _VOID_Z
 _G = 9.81
 _VOID_HORIZON = 1.2      # seconds for the predictive look-ahead
