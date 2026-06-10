@@ -57,7 +57,13 @@ restart_one() {
   local pidf="$PIDDIR/oracle${i}.pid"
   [ -f "$pidf" ] && pkill -9 -P "$(cat "$pidf" 2>/dev/null)" 2>/dev/null
   pkill -9 -f "oracle${i}-unity[.]log" 2>/dev/null
-  sleep 1
+  # Desync jitter (2026-06-10): instances restarted in the same batch come
+  # up phase-LOCKED (identical map + same boot time → same round/scene
+  # cycle) and then hit the same hang-prone transition SIMULTANEOUSLY —
+  # observed as repeating 3-4-instance mass hangs every ~15-30 min, each
+  # costing ~4 min of fleet capacity. A random 1-20s stagger decorrelates
+  # their round clocks so hangs return to independent singles.
+  sleep $((1 + RANDOM % 20))
   nohup bash "$LAUNCH" "$i" > "$LOGS/oracle${i}-combined.log" 2>&1 &
   echo $! > "$pidf"
 }
