@@ -46,10 +46,18 @@ restart_one() {
   local i="$1"; local why="$2"
   GRACE[$i]=$(( $(date +%s) + BOOT_GRACE ))   # don't health-check until booted
   echo "[watchdog $(date '+%H:%M:%S')] restarting instance $i ($why)"
-  # kill just this instance's process tree by its recorded pid
+  # Kill this instance's whole chain. pkill -P <recorded pid> only reaches
+  # *direct children* of the launcher bash (often long exited), so a wedged
+  # StickFight.exe survived as an orphan still attached to the instance's
+  # wineprefix — and every relaunch into that prefix then conflicted and
+  # wedged too (observed as a ~5-min restart loop on inst 2, 2026-06-10).
+  # The -logFile arg embeds the instance number in every process of the
+  # proton/wine chain, so match on that; [.] keeps this script's own
+  # cmdline from matching the pattern.
   local pidf="$PIDDIR/oracle${i}.pid"
   [ -f "$pidf" ] && pkill -9 -P "$(cat "$pidf" 2>/dev/null)" 2>/dev/null
-  # also clear stale wineserver for its prefix
+  pkill -9 -f "oracle${i}-unity[.]log" 2>/dev/null
+  sleep 1
   nohup bash "$LAUNCH" "$i" > "$LOGS/oracle${i}-combined.log" 2>&1 &
   echo $! > "$pidf"
 }
