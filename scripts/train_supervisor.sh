@@ -22,12 +22,13 @@ echo "[train-sup] start $(date) instances=$INSTANCES steps=$STEPS"
 # live workers). WINDOW is long enough that a mere SLOWDOWN — one bad instance
 # limping the fleet ~6x while the watchdog recovers it — still clears MIN_PROG
 # and does NOT trigger a restart (no thrashing); only a true freeze does.
-# 2026-06-10: tightened 900/1000 → 300/200 after two trainer wedges in an
-# hour (dead-worker block, then a master+workers unix-socket write deadlock).
-# Even a 4x slowdown clears 200 steps in 300s (worst legit case ~2048/270s),
-# so this can't false-trigger on a limping instance — but a true freeze now
-# recovers in ~5 min instead of ~15.
-WINDOW=300; MIN_PROG=200
+# 2026-06-10: 900/1000 → 600/200. Progress is ROLLOUT-QUANTIZED: train.log's
+# total_timesteps only updates every n_steps*4=2048 steps (~256s at normal
+# speed, 400s+ while the watchdog reboots an instance), so any window below
+# the worst-case rollout duration false-kills a healthy trainer mid-rollout
+# (a 300s window did exactly that at 14:58). 600s covers a half-speed
+# rollout; a true freeze still recovers in ~10 min unattended.
+WINDOW=600; MIN_PROG=200
 anchor_ts=-1; anchor_time=$(date +%s)
 
 while true; do
