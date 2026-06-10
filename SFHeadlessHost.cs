@@ -295,6 +295,19 @@ namespace SFHeadlessHost
                     (object)wsType != null ? AccessTools.Method(wsType, "GetRandomWeaponIndex") : null,
                     prefix: nameof(GetRandomWeaponIndexPrefix));
 
+                // 2026-06-10 PICKUP FIX: in a network match (which we force),
+                // BodyPart.OnCollisionEnter routes weapon pickup through
+                // MultiplayerManager.RequestWeaponPickUp — a Steamworks P2P
+                // round-trip that goes nowhere for in-process rigs, so LOCAL
+                // players could NEVER pick up weapons (verified: agent armed
+                // 0% over 90s with sky weapons raining). Replicate the stock
+                // LOCAL branch (Fighting.PickUpWeapon + destroy pickup) for
+                // batchmode, same philosophy as the death-pipeline fix.
+                var mmTypeP = AccessTools.TypeByName("MultiplayerManager");
+                TryPatch(harmony, "MultiplayerManager.RequestWeaponPickUp (prefix → local pickup)",
+                    (object)mmTypeP != null ? AccessTools.Method(mmTypeP, "RequestWeaponPickUp") : null,
+                    prefix: nameof(RequestWeaponPickUpLocalPrefix));
+
                 var gmTypeP = AccessTools.TypeByName("GameManager");
                 TryPatch(harmony, "GameManager.SpawnRandomWeapon (prefix replace impl)",
                     (object)gmTypeP != null ? AccessTools.Method(gmTypeP, "SpawnRandomWeapon") : null,
@@ -602,16 +615,45 @@ namespace SFHeadlessHost
                         Log.LogWarning("[P6.5 SRW] MultiplayerManager instance is null; skipping.");
                     return false;
                 }
-                var spawnWeapon = AccessTools.Method(mmType, "SpawnWeapon", new[] { typeof(int), typeof(Vector3), typeof(bool) });
-                if ((object)spawnWeapon == null)
+                // 2026-06-10 WEAPON-EXISTENCE FIX: stock SpawnWeapon only
+                // SERIALIZES a WeaponSpawned packet for clients — on a stock
+                // listen-server the host's own client-side handler then
+                // instantiates the physical weapon, but this headless host
+                // never loops the packet back to itself, so NO physical
+                // WeaponPickUp ever existed in-world (verified: 1000+ "sky
+                // spawn" log lines, zero pickups possible, agent armed 0%).
+                // Replicate the loopback: build the same 8-byte payload stock
+                // writes and call OnWeaponSpawned(byte[]) — instantiates the
+                // weapon locally + registers mSpawnedWeapons properly.
+                // (Training fleet has no socket clients; the socket broadcast
+                // is intentionally skipped to keep spawn IDs consistent.)
+                // Both GetNext* take `bool beginFromEnd = false` — raw reflection
+                // does NOT apply default args, so pass false explicitly.
+                var getWid = AccessTools.Method(mmType, "GetNextWeaponSpawnID", new[] { typeof(bool) });
+                var getSid = AccessTools.Method(mmType, "GetNextSyncableObjectSpawnID", new[] { typeof(bool) });
+                var onSpawned = AccessTools.Method(mmType, "OnWeaponSpawned", new[] { typeof(byte[]) });
+                if ((object)getWid == null || (object)getSid == null || (object)onSpawned == null)
                 {
                     if (_srwCallCount <= 3)
-                        Log.LogWarning("[P6.5 SRW] SpawnWeapon method not found.");
+                        Log.LogWarning("[P6.5 SRW] OnWeaponSpawned/GetNext* not found — cannot spawn local weapon.");
                     return false;
                 }
+                ushort widN = (ushort)getWid.Invoke(mmInst, new object[] { false });
+                ushort sidN = (ushort)getSid.Invoke(mmInst, new object[] { false });
+                byte[] payload = new byte[8];
+                using (var ms = new System.IO.MemoryStream(payload))
+                using (var bw = new System.IO.BinaryWriter(ms))
+                {
+                    bw.Write((byte)weaponIdx);
+                    bw.Write((sbyte)spawnPos.y);
+                    bw.Write((sbyte)spawnPos.z);
+                    bw.Write(widN);
+                    bw.Write(sidN);
+                    bw.Write((byte)0);   // not a present
+                }
+                onSpawned.Invoke(mmInst, new object[] { payload });
                 if (_srwCallCount <= 5 || _srwCallCount % 10 == 0)
-                    Log.LogInfo($"[P6.5 SRW] call#{_srwCallCount} → SpawnWeapon(id={weaponIdx}, pos={spawnPos}, present=false)");
-                spawnWeapon.Invoke(mmInst, new object[] { weaponIdx, spawnPos, false });
+                    Log.LogInfo($"[P6.5 SRW] call#{_srwCallCount} → local OnWeaponSpawned(id={weaponIdx}, pos={spawnPos}, wid={widN})");
             }
             catch (Exception e)
             {
@@ -1643,6 +1685,135 @@ namespace SFHeadlessHost
         // mouse every frame — see the aim-fix patch install for details).
         internal static bool SkipRotateTowardsMousePrefix() => !_batchModeHost;
 
+        // 2026-06-10 AUTO-PICKUP TICK: the stock pickup chain
+        // (BodyPart.OnCollisionEnter → RequestWeaponPickUp) is broken twice
+        // over for in-process rigs (mNetworkPlayer null NREs before the
+        // request; the request's server path dies on empty registries). Rather
+        // than patch every broken stock layer, arm rigs directly: every few
+        // ticks, any unarmed spawned rig standing within reach of a settled,
+        // pickup-able weapon picks it up via the same local replication the
+        // prefix uses. Radius ~1.2m ≈ body contact, stock gates respected.
+        private int _autoPickupTickCounter;
+        internal void TickAutoPickup()
+        {
+            if (!_batchModeHost) return;
+            if ((++_autoPickupTickCounter % 5) != 0) return;   // ~10-20Hz effective
+            // 2.0m ≈ body radius + arm reach — walked-onto-it plausibility,
+            // dense enough for stage-0 learning.
+            try { TryLocalPickupSweep(2.0f, null, 0); }
+            catch { }
+        }
+
+        // 2026-06-10 PICKUP FIX (see patch-install comment). Stock
+        // RequestWeaponPickUp's own server path dies on the oracle:
+        // mSpawnedWeapons is empty and mConnectedClients has no PlayerObject
+        // for in-process rigs. Resolve the picking rig + touched weapon
+        // spatially and replicate the stock LOCAL pickup outcome.
+        internal static bool RequestWeaponPickUpLocalPrefix(ushort __0, byte __1)
+        {
+            if (!_batchModeHost) return true;   // real client path elsewhere
+            try
+            {
+                TryLocalPickupSweep(2.5f, __0, __1);
+            }
+            catch (Exception e)
+            {
+                var inner0 = (e is System.Reflection.TargetInvocationException tie0 && (object)tie0.InnerException != null)
+                    ? tie0.InnerException : e;
+                Log.LogWarning($"RequestWeaponPickUpLocalPrefix: {inner0}");
+            }
+            return false;   // never run the broken stock network path in batchmode
+        }
+
+        // Shared local-pickup core: nearest (unarmed, alive rig | pickup-able
+        // weapon) pair within `radius` → replicate the stock LOCAL pickup
+        // (Fighting.PickUpWeapon + destroy). Used by both the request prefix
+        // (radius 2.5, collision-confirmed) and the auto-pickup tick (1.2).
+        internal static void TryLocalPickupSweep(float radius, ushort? reqIdx, byte reqPlayer)
+        {
+            var wpType = AccessTools.TypeByName("WeaponPickUp");
+            var bpType = AccessTools.TypeByName("BodyPart");
+            var fgType = AccessTools.TypeByName("Fighting");
+            var ciT = AccessTools.TypeByName("CharacterInformation");
+            if ((object)wpType == null || (object)fgType == null) return;
+            var idF = AccessTools.Field(wpType, "id");
+            var unEndingF = AccessTools.Field(wpType, "unEnding");
+            var abilityF = AccessTools.Field(wpType, "sendTheMovementAbility");
+            var counterF = AccessTools.Field(wpType, "counter");
+            var cantF = AccessTools.Field(wpType, "cantBePickledUpFor");
+            var weaponFldF = AccessTools.Field(fgType, "weapon");
+            var deadFldF = ((object)ciT != null) ? AccessTools.Field(ciT, "isDead") : null;
+
+            var weapons = UnityEngine.Object.FindObjectsOfType(wpType);
+            if (weapons == null || weapons.Length == 0) return;
+            Component bestW = null; Component bestFg = null; GameObject bestRig = null; float bestD = radius;
+            foreach (var kv in SlotToRig)
+            {
+                var rig = kv.Value;
+                if ((object)rig == null) continue;
+                var fg = rig.GetComponentInChildren(fgType);
+                if ((object)fg == null) continue;
+                // only UNARMED, ALIVE rigs pick up (stock caller gates)
+                try
+                {
+                    if ((object)weaponFldF != null && (object)weaponFldF.GetValue(fg) != null) continue;
+                    if ((object)deadFldF != null)
+                    {
+                        var cinf = rig.GetComponentInChildren(ciT);
+                        if ((object)cinf != null && (bool)deadFldF.GetValue(cinf)) continue;
+                    }
+                }
+                catch { }
+                Vector3 rp = rig.transform.position;
+                if ((object)bpType != null)
+                {
+                    var bp = rig.GetComponentInChildren(bpType) as Component;
+                    if ((object)bp != null) rp = bp.transform.position;
+                }
+                for (int i = 0; i < weapons.Length; i++)
+                {
+                    var w = weapons[i] as Component;
+                    if ((object)w == null) continue;
+                    try
+                    {
+                        if ((object)counterF != null && (float)counterF.GetValue(w) <= 0.3f) continue;
+                        if ((object)cantF != null && (float)cantF.GetValue(w) >= 0f) continue;
+                    }
+                    catch { }
+                    float d = Vector3.Distance(rp, w.transform.position);
+                    if (d < bestD) { bestD = d; bestW = w; bestRig = rig; bestFg = fg as Component; }
+                }
+            }
+            if ((object)bestW == null || (object)bestRig == null)
+            {
+                if (reqIdx.HasValue)
+                    Log.LogWarning($"[pickup] request (idx={reqIdx} player={reqPlayer}) but no (rig,weapon) pair within {radius:0.0}m — dropped");
+                return;
+            }
+            int wid = ((object)idF != null) ? (int)idF.GetValue(bestW) : 0;
+            int ability = ((object)abilityF != null) ? (int)abilityF.GetValue(bestW) : -1;
+            bool unEnding = (object)unEndingF != null && (bool)unEndingF.GetValue(bestW);
+            if (ability != -1)
+            {
+                try
+                {
+                    var maType = AccessTools.TypeByName("MovementAbility");
+                    if ((object)maType != null)
+                    {
+                        var ma = bestRig.GetComponentInChildren(maType);
+                        var setM = ((object)ma != null) ? AccessTools.Method(maType, "SetAbility") : null;
+                        if ((object)setM != null) setM.Invoke(ma, new object[] { ability });
+                    }
+                }
+                catch { }
+            }
+            var pick = AccessTools.Method(fgType, "PickUpWeapon");
+            if ((object)pick == null) return;
+            pick.Invoke(bestFg, new object[] { wid, bestW.gameObject });
+            if (!unEnding) UnityEngine.Object.Destroy(bestW.gameObject);
+            Log.LogInfo($"[pickup] armed rig (weapon id={wid}, d={bestD:0.00}m, via={(reqIdx.HasValue ? "request" : "tick")})");
+        }
+
         // Headless oracle has NO Steam: the stock IsP2PPacketAvailable always
         // throws "Steamworks is not initialized" (via TestIfAvailableClient),
         // and ListenForPackages can also NullRef on a null channel — both every
@@ -2095,6 +2266,9 @@ namespace SFHeadlessHost
                     // arrived — analog sticks need their last value held so
                     // the rig keeps moving between input packets.
                     WriteInputsToRigs();
+                    // Walk-over weapon pickup for spawned rigs (the stock
+                    // collision→network pickup chain is dead headless).
+                    TickAutoPickup();
                     // Emit a state snapshot at 30 Hz if anyone has pinged us.
                     if (_bridgePeer != null && Time.realtimeSinceStartup - _lastStateEmit >= (1.0f / 30.0f))
                     {

@@ -43,9 +43,12 @@ namespace SFHeadlessHost
         private int _skyWeaponSpawnCount;
         /// <summary>Realtime sky-weapon schedule — do not use randomWeaponCounter (stock GM.Update resets it).</summary>
         private float _oracleNextSkyWeaponAt = -1f;
-        private const float OracleFirstSkyWeaponDelay = 2f;
-        private const float OracleSkyWeaponIntervalMin = 5f;
-        private const float OracleSkyWeaponIntervalMax = 8f;
+        // 2026-06-10: densified for stage-0 RL (was 2 / 5 / 8) — weapons are
+        // now physically real (loopback spawn fix) and pickup works; denser
+        // drops give the agent regular armed practice windows.
+        private const float OracleFirstSkyWeaponDelay = 1f;
+        private const float OracleSkyWeaponIntervalMin = 3f;
+        private const float OracleSkyWeaponIntervalMax = 5f;
         private static int _mapAwakeRegisterCount;
         private bool _oracleMapLoadInProgress;
         private float _oracleMapLoadStartedAt = -1f;
