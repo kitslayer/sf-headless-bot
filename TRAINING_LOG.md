@@ -276,3 +276,29 @@ stall=15s pass. Zero manual interventions since 03:27.
 (rew5 band +0.09 ↔ +0.44, typically ~+0.25), falls 1-6%, win 3-14% oscillating.
 ~55 watchdog instance-recoveries overnight, all clean; trainer never wedged
 under the 8k-checkpoint + stall=15 config.
+
+## 2026-06-10 — v7: weapon-obs, Ice11, and the clock wedge
+
+- **v7 deployed** (~10:45): 78-dim obs (+2 nearest ground weapons rel to
+  self), +0.05 pickup shaping with `arms` telemetry, CapGroundWeapons(24),
+  forced regen=0 (DSF). Root cause of v6's 2-14% win cap: the agent was
+  blind to weapon locations and idled unarmed. First rollout win 0.18,
+  arms 0.30. Commits `92be454` + review fixes.
+- **Ice11 (scene 57)** per Miles (flatter): switched ~12:10. Found the
+  **clock wedge**: map-entry freeze (managerTime=0) whose restore
+  coroutine dies headless → Time.timeScale stuck 0 forever, rigs pinned,
+  reward flat 0 while fps *looks* great. Fixed via StartCountDown batch
+  prefix (apply end state synchronously) + LateUpdate wedge-breaker
+  (burst mode 2s). Rolled back the ~30k frozen-junk steps to the 48k
+  checkpoint. Void box per map via SF_VOID_Y/Z in fleet.env.
+- **Throughput/infra**: sky-drop cadence 2-3.5s (ice slides weapons off
+  edges, supply was ~1 standing); watchdog orphan-kill fix (`4b70a3a`);
+  supervisor stall-guard fixed twice (ts-reset re-anchor; 600s window —
+  progress is rollout-quantized, 300s false-killed); SF_BOT_STALL_SECS
+  15→30 (was ending rounds mid-weapon-fetch, halfway through the env's
+  30s episode cap — win climbed 0.08→0.14 after).
+- **State at 200k** (18:40): win ~0.10±0.04, fell ~0.12, arms ~0.35±0.1,
+  rew oscillating ±0.2. Stage-0 gate (win≥0.8) still far; next levers:
+  more steps (PPO needs 500k+), then finishing-incentive shaping or
+  6-instance scaling (needs port-scheme change). Viewer:
+  `python/sf_viewer.py` (pygame, DISPLAY=:0, keys 1-4/r/q).
