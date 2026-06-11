@@ -372,15 +372,22 @@ class SFHeadlessEnv(gym.Env):
             self._hit_ticks += 1
         self._prev_self_hp = self_hp
         self._prev_opp_hp = opp_hp
-        # Pickup shaping: one-time +0.05 on unarmed→armed. The walk-to-weapon →
-        # damage credit chain is seconds long; this densifies it. Small vs a
-        # kill (+1.0) so it can't dominate, and not exploitable: re-arming
-        # requires having lost the gun (emptied = it auto-drops), which already
-        # costs time and forgone damage.
+        # Pickup shaping: one-time bonus on unarmed→armed. The walk-to-weapon →
+        # damage credit chain is seconds long; this densifies it. Not
+        # exploitable: re-arming requires having lost the gun (emptied = it
+        # auto-drops), which already costs time and forgone damage.
+        # 2026-06-11 retune: 0.05 → 0.15, plus +0.0005/tick while armed (max
+        # +0.3 over a full 600-step episode). 59k steps of hit-shaping doubled
+        # hits/ep but win stayed flat at ~0.07 — arms ~0.25/ep showed gun
+        # ACQUISITION was the binding constraint, not per-hit credit. Camping
+        # with a gun (trickle ~0.3) stays strictly dominated by hunting with
+        # it (hits + 1.5x damage + kill 1.0-1.5).
         armed_now = bool(me.get("armed", False)) if me else self._prev_armed
         if armed_now and not self._prev_armed:
-            reward += 0.05
+            reward += 0.15
             self._arm_count += 1
+        if armed_now:
+            reward += 0.0005
         self._prev_armed = armed_now
 
         terminated = False
