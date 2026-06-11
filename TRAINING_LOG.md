@@ -302,3 +302,16 @@ under the 8k-checkpoint + stall=15 config.
   more steps (PPO needs 500k+), then finishing-incentive shaping or
   6-instance scaling (needs port-scheme change). Viewer:
   `python/sf_viewer.py` (pygame, DISPLAY=:0, keys 1-4/r/q).
+
+## 2026-06-11 (overnight) — v7 at 500k
+
+Run crossed 500k (~06:00) fully autonomous since the 23:00 watch. Band:
+win 0.02-0.16 (oscillating, centered ~0.08), fell ~0.10-0.15, arms
+0.25-0.54, rew ±0.3 oscillation. Notable events, all self-healed: one
+trainer EOFError crash (silent worker death #3, supervisor relaunched
+<60s, resumed from checkpoint), recurring instance hang-churn (~2-3
+watchdog restarts/10min; fps 7→5-6 overnight from boot overhead), one
+false-empty ts read (log line caught mid-write — watch now uses an
+anchored grep + empty guard). No gate progress: win needs either far
+more steps or the armed-time/HP-curriculum levers (SF_STAGE_HP knob is
+in the tree, dormant; Miles deferred).
