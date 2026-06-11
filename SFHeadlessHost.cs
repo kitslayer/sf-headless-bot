@@ -98,6 +98,9 @@ namespace SFHeadlessHost
         // N× wall-speed for headless training (SF_TIMESCALE env, 1–5; 1 = stock).
         // Asserted in LateUpdate only when the game itself intends normal speed.
         internal static float TrainTimeScale = 1f;
+        // Stage HP (SF_STAGE_HP env, 1-100; default 100 = DSF comp). Stock
+        // match option; curriculum shrinks the kill task at low stages.
+        internal static int StageHP = 100;
         private float _roundAdvanceBlockedUntil = -1f;
         private bool _roundAdvanceQueuedAfterMapLoad;
         private readonly HashSet<int> _deathSlotsHandled = new HashSet<int>();
@@ -1732,12 +1735,16 @@ namespace SFHeadlessHost
             // clear). Keep the newest 24, destroy the oldest beyond that.
             try { CapGroundWeapons(24); }
             catch { }
-            // DSF comp ruleset: HP 100, NO regen. Stock regen heals 10 HP/s,
-            // erasing the agent's damage during every ammo/pickup gap. regen
-            // comes from PlayerPrefs (unset in our prefixes → 0) but re-assert
+            // DSF comp ruleset: NO regen (stock regen heals 10 HP/s, erasing
+            // the agent's damage during every ammo/pickup gap). regen comes
+            // from PlayerPrefs (unset in our prefixes → 0) but re-assert
             // periodically so no later LoadOptions/packet path can flip it.
-            // HP guard: TakeDamage scales by 100/HP — HP=0 would make every
-            // hit infinite damage.
+            // HP: stock match option (the same lobby setting DSF sets to 100).
+            // SF_STAGE_HP (default 100) lets the curriculum shrink the kill
+            // task — TakeDamage scales by 100/HP, so HP=25 means one clip
+            // finishes the dummy and the win signal becomes dense; ramp
+            // 25→50→100 as win_mean climbs. Clamped to [1,100]: 0 would make
+            // every hit infinite damage.
             try
             {
                 var ohT = AccessTools.TypeByName("OptionsHolder");
@@ -1746,7 +1753,7 @@ namespace SFHeadlessHost
                     var regenF = AccessTools.Field(ohT, "regen");
                     if ((object)regenF != null && (int)regenF.GetValue(null) != 0) regenF.SetValue(null, 0);
                     var hpFld = AccessTools.Field(ohT, "HP");
-                    if ((object)hpFld != null && (int)hpFld.GetValue(null) < 1) hpFld.SetValue(null, 100);
+                    if ((object)hpFld != null && (int)hpFld.GetValue(null) != StageHP) hpFld.SetValue(null, StageHP);
                 }
             }
             catch { }
@@ -7593,6 +7600,9 @@ namespace SFHeadlessHost
                 OraclePreCombatGraceSec = fv;
             if (float.TryParse(Environment.GetEnvironmentVariable("SF_TIMESCALE"), out fv) && fv >= 1f && fv <= 5f)
                 TrainTimeScale = fv;
+            int iv;
+            if (int.TryParse(Environment.GetEnvironmentVariable("SF_STAGE_HP"), out iv) && iv >= 1 && iv <= 100)
+                StageHP = iv;
 
             // SFGYM_BOT_SLOTS=0,1 → auto-spawn in-process scripted bots in those
             // player slots (0..3). Comma-separated. Empty/unset = disabled.
