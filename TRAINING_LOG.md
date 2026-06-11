@@ -315,3 +315,14 @@ false-empty ts read (log line caught mid-write — watch now uses an
 anchored grep + empty guard). No gate progress: win needs either far
 more steps or the armed-time/HP-curriculum levers (SF_STAGE_HP knob is
 in the tree, dormant; Miles deferred).
+
+## 2026-06-11 — v7 at 600k
+
+Crossed 600k ~10:05, still fully self-healing (no manual intervention
+since 500k). Band unchanged: win 0.03-0.15 (centered ~0.10), fell
+0.08-0.19, arms 0.30-0.47, rew5 -0.08..+0.25. Instance hang-churn
+continues (~1430 cumulative watchdog restarts, fps steady at 5-6); two
+single-tick ts-flat strikes self-cleared (slow rollouts under churn —
+quantization, not freezes). Plateau verdict at HP=100 unchanged: <1
+weapon pickup/episode vs the 1-3 clips a kill needs caps win mechanically;
+SF_STAGE_HP=25 curriculum lever remains built+dormant pending Miles.
