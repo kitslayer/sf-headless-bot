@@ -133,6 +133,7 @@ class SFHeadlessEnv(gym.Env):
         self._prev_opp_hp = 100.0
         self._prev_armed = False   # pickup-shaping edge detector
         self._arm_count = 0        # pickups this episode (telemetry)
+        self._hit_ticks = 0        # damaging ticks this episode (telemetry)
         # Normalized aim-at-opponent direction, refreshed from each snapshot in
         # _build_obs and sent with every action (aimx==world-z 1:1, verified).
         self._aim_dz = 1.0
@@ -327,6 +328,7 @@ class SFHeadlessEnv(gym.Env):
                     self._prev_opp_hp = float(op["hp"])
                     self._prev_armed = bool(me.get("armed", False))
                     self._arm_count = 0
+                    self._hit_ticks = 0
                     return obs, {}
             time.sleep(0.03)
         # Timed out — return whatever we have so training doesn't deadlock.
@@ -338,6 +340,7 @@ class SFHeadlessEnv(gym.Env):
         self._prev_opp_hp = float(op["hp"]) if op else 100.0
         self._prev_armed = bool(me.get("armed", False)) if me else False
         self._arm_count = 0
+        self._hit_ticks = 0
         return obs, {"reset_timeout": True}
 
     def step(self, action):
@@ -352,10 +355,21 @@ class SFHeadlessEnv(gym.Env):
         # neutral) instead of 0.0, which fabricated ±1.0 damage swings.
         self_hp = float(me["hp"]) if me else self._prev_self_hp
         opp_hp = float(op["hp"]) if op else self._prev_opp_hp
-        # Damage-based shaped reward.
+        # Damage-based shaped reward, kill-biased (2026-06-11): a full day at
+        # 100 HP showed win_mean pinned ~0.08 — the kill path (fetch gun, land
+        # 3-15 hits, finish) earned barely more than idling safely, so PPO
+        # never committed to it. Three changes, all reward-side (game HP
+        # untouched per Miles):
+        #   * damage DEALT weighs 1.5x damage taken — favors aggressive trades
+        #   * +0.05 flat per damaging tick — each landed hit gets a clear
+        #     floor even when per-hit HP damage is small (uzi pellets etc.),
+        #     keeping the shoot-at-opponent signal dense at 100 HP
         opp_dmg = max(0.0, self._prev_opp_hp - opp_hp)
         self_dmg = max(0.0, self._prev_self_hp - self_hp)
-        reward = (opp_dmg - self_dmg) / 100.0
+        reward = (1.5 * opp_dmg - self_dmg) / 100.0
+        if opp_dmg > 0.0:
+            reward += 0.05
+            self._hit_ticks += 1
         self._prev_self_hp = self_hp
         self._prev_opp_hp = opp_hp
         # Pickup shaping: one-time +0.05 on unarmed→armed. The walk-to-weapon →
@@ -378,7 +392,12 @@ class SFHeadlessEnv(gym.Env):
         self_dead = me is not None and ((not me["alive"]) or self_hp <= 0)
         opp_dead = op is not None and ((not op["alive"]) or opp_hp <= 0)
         if opp_dead and not self_dead:
-            reward += 1.0; terminated = True
+            #   * fast-kill bonus: +1.0 base, plus up to +0.5 decaying
+            #     linearly over the 30s cap — time pressure toward hunting
+            #     WITHOUT a per-step idle penalty (which would make suicide
+            #     cheaper than waiting and inflate fell_mean).
+            reward += 1.0 + 0.5 * max(0.0, 1.0 - self._steps / self.max_steps)
+            terminated = True
         elif self_dead:
             # 2026-06-06 tuning: death (vs a stationary dummy this is almost
             # always a fall off Desert3's edge) was -1.0 == a full kill, so the
@@ -400,7 +419,11 @@ class SFHeadlessEnv(gym.Env):
                 "fell": 1.0 if (self_dead and my_y < -3.0) else 0.0,
                 # arms = pickups this episode; watches both learning progress
                 # and the +0.05 dump-and-refetch farming surface.
-                "arms": float(self._arm_count)}
+                "arms": float(self._arm_count),
+                # hits = damaging ticks this episode — the dense precursor to
+                # win_mean; shows whether the kill-biased shaping is working
+                # long before kills become common.
+                "hits": float(self._hit_ticks)}
         return obs, float(reward), terminated, truncated, info
 
     def close(self):
