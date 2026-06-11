@@ -326,3 +326,26 @@ single-tick ts-flat strikes self-cleared (slow rollouts under churn —
 quantization, not freezes). Plateau verdict at HP=100 unchanged: <1
 weapon pickup/episode vs the 1-3 clips a kill needs caps win mechanically;
 SF_STAGE_HP=25 curriculum lever remains built+dormant pending Miles.
+
+## 2026-06-11 (afternoon) — kill-biased reward shaping at 650-750k
+
+Miles: no HP changes — shape rewards to make it kill more. Two passes,
+both env-side only (commits a7e8b68, then the retune):
+1. **650k:** dealt-damage 1.5x taken, +0.05/damaging-tick floor, kill
+   pays 1.0 + 0.5*(time left/30s); added `hits` telemetry (damaging
+   ticks/ep, the dense kill-path precursor).
+2. **704k:** after 59k steps hits doubled (0.14→~0.29 plateau) but win
+   stayed flat ~0.07 — arms ~0.25-0.3/ep showed gun ACQUISITION is the
+   binding constraint. Pickup bonus 0.05→0.15 + 0.0005/tick armed
+   trickle (max ~0.3/ep; camping stays dominated by hunting).
+
+At 750k: hits holds ~0.2-0.4 (2x pre-shaping), arms 0.288→0.311 avg
+with an upward tail (0.33-0.38 recent), fell unchanged-to-better
+(0.05-0.17), win still 0.05-0.10 — the chain fetch→hit→kill is being
+paid at every link now; wins lag because a kill at HP=100 needs a
+full clip+ landed within the 30s cap. Both trainer bounces resumed
+clean from checkpoints (648k, 704k; obs unchanged so no archive
+needed). Next decision point: if arms/hits keep drifting up but win
+stays <0.15 by ~850k, the remaining reward-side lever is a bigger
+fast-kill bonus; beyond that it's HP curriculum (dormant) or longer
+episodes.
