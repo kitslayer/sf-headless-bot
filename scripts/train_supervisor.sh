@@ -44,8 +44,20 @@ while true; do
     echo "[train-sup $(date '+%H:%M:%S')] trainer not running — launching (resumes from checkpoint)"
     ( source "$VENV/bin/activate"
       cd "$BOTDIR/python"
+      # Kickstart (2026-06-12): decaying BC anchor on the scripted-teacher
+      # demos. --ks-anchor is FIXED at the BC-2 resume point so supervisor
+      # relaunches don't restart the decay clock; once num_timesteps passes
+      # anchor+decay the anchor weight is 0 and this is plain PPO again.
+      KS_ARGS=""
+      if [ -f "$BOTDIR/demos/teacher_demos.npz" ]; then
+        # Phase A (critic warmup): policy frozen 808k->858k while the value
+        # head recalibrates to the BC clone. Phase B: LR warmup + BC anchor
+        # decaying 0.5 -> 0 over 858k->1258k. Anchors are ABSOLUTE
+        # num_timesteps so crash relaunches don't restart the schedule.
+        KS_ARGS="--kickstart-demos $BOTDIR/demos/teacher_demos.npz --ks-coef 0.5 --ks-anchor 858000 --ks-decay 400000 --ks-warmup-until 858000"
+      fi
       nohup python train_headless_ppo.py --instances "$INSTANCES" --base-bridge 1341 \
-        --steps "$STEPS" --save-every 8000 >> "$BOTDIR/logs/train.log" 2>&1 ) &
+        --steps "$STEPS" --save-every 8000 $KS_ARGS >> "$BOTDIR/logs/train.log" 2>&1 ) &
     anchor_ts=-1; anchor_time=$(date +%s)   # reset stall tracking for the fresh trainer
     sleep 10
   else
