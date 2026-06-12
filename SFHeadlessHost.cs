@@ -4954,14 +4954,21 @@ namespace SFHeadlessHost
                     bool retreat = false;
                     if (!armed && _tWpCache.Count > 0)
                     {
-                        float bw = float.MaxValue; Vector3 bwp = Vector3.zero;
+                        float bw = float.MaxValue; Vector3 bwp = Vector3.zero; bool anyW = false;
                         for (int i = 0; i < _tWpCache.Count; i++)
                         {
+                            // Skip weapons sitting in the edge band — chasing
+                            // them is how the teacher slid into the void (~40%
+                            // of episodes in the first collection).
+                            if (Mathf.Abs(_tWpCache[i].z) > _tVoidZ - 4.0f) continue;
                             float d2 = Vector3.Distance(me, _tWpCache[i]);
-                            if (d2 < bw) { bw = d2; bwp = _tWpCache[i]; }
+                            if (d2 < bw) { bw = d2; bwp = _tWpCache[i]; anyW = true; }
                         }
-                        tdz = bwp.z - me.z; tdy = bwp.y - me.y;
-                        stopAt = 0.2f;     // stand ON it — pickup is on contact
+                        if (anyW)
+                        {
+                            tdz = bwp.z - me.z; tdy = bwp.y - me.y;
+                            stopAt = 0.2f;  // stand ON it — pickup is on contact
+                        }
                     }
                     else if (armed && Mathf.Abs(dz) < 2.5f)
                     {
@@ -4973,12 +4980,21 @@ namespace SFHeadlessHost
                         stickX = (dz > 0f) ? 1.0f : -1.0f;             // step away
                     else
                         stickX = (tdz > stopAt) ? -1.0f : (tdz < -stopAt ? 1.0f : 0.0f);
-                    // Void veto (HazardAvoidance): never walk outward when close
-                    // to an edge. +mx walks toward -z, so stickX>0 risks the -z
-                    // edge and stickX<0 the +z edge.
-                    float margin = _tVoidZ - 2.5f;
-                    if (stickX > 0f && me.z < -margin) stickX = 0f;
-                    if (stickX < 0f && me.z > margin) stickX = 0f;
+                    // Void veto (HazardAvoidance), two bands. On ice a stopped
+                    // rig keeps sliding, so the old stop-only 2.5m veto still
+                    // lost ~40% of episodes to the void. Soft band (4.5m): veto
+                    // outward input. Hard band (3.0m): actively step INWARD
+                    // regardless of intent — fights slide momentum. (+mx walks
+                    // toward -z, so stickX>0 risks the -z edge.)
+                    float hardM = _tVoidZ - 3.0f;
+                    float softM = _tVoidZ - 4.5f;
+                    if (me.z < -hardM) stickX = -1.0f;
+                    else if (me.z > hardM) stickX = 1.0f;
+                    else
+                    {
+                        if (stickX > 0f && me.z < -softM) stickX = 0f;
+                        if (stickX < 0f && me.z > softM) stickX = 0f;
+                    }
                     // jump: target clearly above, or cadence nudge when stuck on
                     // a lip while wanting to move.
                     bool jump = (tdy > 1.2f && Mathf.Abs(tdz) < 8.0f && (_botDriveTickCounter % 25) == 0)
