@@ -349,3 +349,19 @@ needed). Next decision point: if arms/hits keep drifting up but win
 stays <0.15 by ~850k, the remaining reward-side lever is a bigger
 fast-kill bonus; beyond that it's HP curriculum (dormant) or longer
 episodes.
+
+## 2026-06-12 — BC from the scripted-bot teacher (650-808k)
+
+Box was down Jun 11 18:43 → Jun 12 ~17:10 (power outage, intentional).
+On resume, built the behavior-cloning pipeline per Miles ("teach it
+directly from the scripted bot"): host DriveScriptedBots now runs the
+teachable core of mod/StickFightGym/ScriptedBot (weapon fetch, engage
+band, pulsed fire, void veto); snapshots emit exact per-slot inputs
+('in'); collect_demos.py recorded 21,339 (obs,action) pairs over 35 min
+on 4 instances (459 eps, teacher win 0.44 overall, 72% of kept eps won;
+teacher-death eps dropped). bc_pretrain.py cloned them into the 800k
+checkpoint (8 epochs, lr 2e-4: move acc 0.956, fire 0.892), saved as
+ppo_headless_808000_steps.zip + BC_INIT_808000 archive. PPO resumed from
+it (verified in train.log). Subagent-reviewed; ops trap confirmed live:
+fleet.sh stop pattern-kills cost one wrapper shell (self-match again —
+use separate calls). Watch win_mean: pre-BC band was 0.05-0.15.
