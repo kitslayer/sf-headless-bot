@@ -4792,10 +4792,17 @@ namespace SFHeadlessHost
         // under this; only genuine "can't reach each other" stalls hit it.
         private static float _botStallSecs = 30f;
 
-        // Per-FixedUpdate bot driver: walk toward nearest other bot + periodic
+        // Per-Update (~60fps render frames) bot driver: walk toward nearest other bot + periodic
         // swing, writing InputFrames into SlotInputs for InjectInputPrefix to
         // feed Movement.cs. Also runs death detection + the post-MovePlayer
         // kinematic flip.
+        // Teacher-driver caches (reflection handles + 10Hz weapon scan).
+        private static Type _tFightingT, _tWeaponPickUpT;
+        private static FieldInfo _tWeaponF, _tCounterF, _tCantF;
+        private static bool _tReflInit;
+        private static readonly List<Vector3> _tWpCache = new List<Vector3>();
+        private static int _tWpCacheTick = -999;
+        private static float _tVoidZ = 17f;
         private void DriveScriptedBots()
         {
             if (!_botScriptedDriveActive || AutoSpawnBotSlots == null || AutoSpawnBotSlots.Count == 0) return;
@@ -4860,6 +4867,55 @@ namespace SFHeadlessHost
                     positions[slot] = pos;
                 }
                 if (positions.Count < 2) return;
+                // ── Teacher driver (2026-06-11, BC demo collection) ──
+                // Ports the TEACHABLE core of the mod's 13-subsystem ScriptedBot
+                // (mod/StickFightGym/ScriptedBot) into the host: weapon fetching
+                // (WeaponManager), engage-range keeping (EngageController), fire
+                // timing, and void-edge veto (HazardAvoidance). Aim solving /
+                // blocking / throws are deliberately absent — the RL student's
+                // action space is MultiDiscrete(move,jump,fire) with env-side
+                // auto-aim, so those skills are not expressible and the teacher
+                // must act within the same envelope it is teaching.
+                if (!_tReflInit)
+                {
+                    _tFightingT = AccessTools.TypeByName("Fighting");
+                    _tWeaponPickUpT = AccessTools.TypeByName("WeaponPickUp");
+                    _tWeaponF = ((object)_tFightingT != null) ? AccessTools.Field(_tFightingT, "weapon") : null;
+                    _tCounterF = ((object)_tWeaponPickUpT != null) ? AccessTools.Field(_tWeaponPickUpT, "counter") : null;
+                    _tCantF = ((object)_tWeaponPickUpT != null) ? AccessTools.Field(_tWeaponPickUpT, "cantBePickledUpFor") : null;
+                    float vz0;
+                    if (float.TryParse(Environment.GetEnvironmentVariable("SF_VOID_Z"), System.Globalization.NumberStyles.Float,
+                                       System.Globalization.CultureInfo.InvariantCulture, out vz0) && vz0 > 1f)
+                        _tVoidZ = vz0;
+                    _tReflInit = true;
+                }
+                // Ground-weapon scan at 10Hz (shared across slots, same filters
+                // as the snapshot "wps" block: settled + pickup-able).
+                if (_botDriveTickCounter - _tWpCacheTick >= 5)
+                {
+                    _tWpCacheTick = _botDriveTickCounter;
+                    _tWpCache.Clear();
+                    try
+                    {
+                        if ((object)_tWeaponPickUpT != null)
+                        {
+                            var warr2 = UnityEngine.Object.FindObjectsOfType(_tWeaponPickUpT);
+                            for (int i = 0; i < warr2.Length; i++)
+                            {
+                                var w = warr2[i] as Component;
+                                if ((object)w == null) continue;
+                                try
+                                {
+                                    if ((object)_tCounterF != null && (float)_tCounterF.GetValue(w) <= 0.3f) continue;
+                                    if ((object)_tCantF != null && (float)_tCantF.GetValue(w) >= 0f) continue;
+                                }
+                                catch { }
+                                _tWpCache.Add(w.transform.position);
+                            }
+                        }
+                    }
+                    catch { }
+                }
                 foreach (var slot in AutoSpawnBotSlots)
                 {
                     if (!positions.TryGetValue(slot, out var me)) continue;
@@ -4874,42 +4930,79 @@ namespace SFHeadlessHost
                     var target = positions[targetSlot];
                     float dz = target.z - me.z;
                     float dy = target.y - me.y;
-                    // SF z-axis is horizontal gameplay axis; +mx → -z.
-                    float stickX = (dz > 0.1f) ? -1.0f : (dz < -0.1f ? 1.0f : 0.0f);
-                    bool swing = (_botDriveTickCounter % 7) == 0 && Mathf.Abs(dz) < 2.5f;
-                    bool jump = (_botDriveTickCounter % 60) == 0 && dy > 0.8f;
-                    if (_botDriveTickCounter % 180 == 0)
-                    {
-                        float hp = -1f;
-                        try
-                        {
-                            var hhType = AccessTools.TypeByName("HealthHandler");
-                            if ((object)hhType != null)
-                            {
-                                if (SlotToRig.TryGetValue(slot, out var rig2) && (object)rig2 != null)
-                                {
-                                    var hh = rig2.GetComponentInChildren(hhType);
-                                    if ((object)hh != null)
-                                    {
-                                        var hpF = AccessTools.Field(hhType, "health");
-                                        if ((object)hpF != null) hp = (float)hpF.GetValue(hh);
-                                    }
-                                }
-                            }
-                        }
-                        catch { }
-                        Log.LogInfo($"[bot-drive] slot{slot} me=({me.x:F1},{me.y:F1},{me.z:F1}) target_slot{targetSlot}=({target.x:F1},{target.y:F1},{target.z:F1}) dz={dz:F2} stickX={stickX:F1} swing={swing} hp={hp:F1}");
-                    }
+                    float dist = Vector3.Distance(me, target);
                     // Skip RL-controlled slots: an external policy writes their
                     // SlotInputs via setBotAction; the scripted driver must not
                     // overwrite those each tick.
                     if (RlControlledSlots.Contains(slot)) continue;
+                    // armed?
+                    bool armed = false;
+                    try
+                    {
+                        if (SlotToRig.TryGetValue(slot, out var rigA) && (object)rigA != null && (object)_tFightingT != null)
+                        {
+                            var fg = rigA.GetComponentInChildren(_tFightingT);
+                            if ((object)fg != null && (object)_tWeaponF != null)
+                                armed = (object)_tWeaponF.GetValue(fg) != null;
+                        }
+                    }
+                    catch { }
+                    // movement target: nearest gun when unarmed (WeaponManager),
+                    // else the opponent at an engage band (EngageController).
+                    float tdz = dz, tdy = dy;
+                    float stopAt = armed ? 6.0f : 1.0f;   // armed: hold mid range
+                    bool retreat = false;
+                    if (!armed && _tWpCache.Count > 0)
+                    {
+                        float bw = float.MaxValue; Vector3 bwp = Vector3.zero;
+                        for (int i = 0; i < _tWpCache.Count; i++)
+                        {
+                            float d2 = Vector3.Distance(me, _tWpCache[i]);
+                            if (d2 < bw) { bw = d2; bwp = _tWpCache[i]; }
+                        }
+                        tdz = bwp.z - me.z; tdy = bwp.y - me.y;
+                        stopAt = 0.2f;     // stand ON it — pickup is on contact
+                    }
+                    else if (armed && Mathf.Abs(dz) < 2.5f)
+                    {
+                        retreat = true;    // too close with a gun — back off
+                    }
+                    // SF z-axis is horizontal gameplay axis; +mx → -z.
+                    float stickX;
+                    if (retreat)
+                        stickX = (dz > 0f) ? 1.0f : -1.0f;             // step away
+                    else
+                        stickX = (tdz > stopAt) ? -1.0f : (tdz < -stopAt ? 1.0f : 0.0f);
+                    // Void veto (HazardAvoidance): never walk outward when close
+                    // to an edge. +mx walks toward -z, so stickX>0 risks the -z
+                    // edge and stickX<0 the +z edge.
+                    float margin = _tVoidZ - 2.5f;
+                    if (stickX > 0f && me.z < -margin) stickX = 0f;
+                    if (stickX < 0f && me.z > margin) stickX = 0f;
+                    // jump: target clearly above, or cadence nudge when stuck on
+                    // a lip while wanting to move.
+                    bool jump = (tdy > 1.2f && Mathf.Abs(tdz) < 8.0f && (_botDriveTickCounter % 25) == 0)
+                                || ((_botDriveTickCounter % 60) == 0 && tdy > 0.8f);
+                    // fire (gun) when plausibly on target — pulsed 2-on/1-off so
+                    // edge-triggered (semi-auto) weapons re-press WasPressed
+                    // instead of being held forever; melee swing cadence when
+                    // unarmed and adjacent (the fallback brawl).
+                    bool fire;
+                    if (armed)
+                        fire = dist < 18f && Mathf.Abs(dy) < 7f && (_botDriveTickCounter % 3) != 0;
+                    else
+                        fire = (_botDriveTickCounter % 7) == 0 && Mathf.Abs(dz) < 2.5f;
+                    if (_botDriveTickCounter % 180 == 0)
+                        Log.LogInfo($"[bot-drive] slot{slot} me=({me.y:F1},{me.z:F1}) opp dz={dz:F2} dist={dist:F1} armed={armed} wps={_tWpCache.Count} stickX={stickX:F1} fire={fire}");
+                    // aim at the opponent — same convention as the RL env's
+                    // auto-aim (stock applies world aim z=-AimX, y=+AimY).
+                    float mag = Mathf.Sqrt(dz * dz + dy * dy);
                     var inp = new InputFrame();
                     inp.StickX = stickX;
                     inp.StickY = 0f;
-                    inp.AimX = (stickX != 0f) ? -stickX : 1.0f;
-                    inp.AimY = 0f;
-                    inp.Buttons = (swing ? 2 : 0) | (jump ? 1 : 0);  // bit0=jump, bit1=fire
+                    inp.AimX = (mag > 1e-3f) ? (-dz / mag) : 1.0f;
+                    inp.AimY = (mag > 1e-3f) ? (dy / mag) : 0f;
+                    inp.Buttons = (fire ? 2 : 0) | (jump ? 1 : 0);  // bit0=jump, bit1=fire
                     SlotInputs[slot] = inp;
                 }
             }
@@ -6848,6 +6941,15 @@ namespace SFHeadlessHost
                         _sb.Append((best / 20f).ToString("0.000", ci));
                     }
                     _sb.Append("]");
+                    // Current input frame for this slot (teacher-driven slots:
+                    // the scripted driver's EXACT choice this tick — the BC
+                    // demo label; RL slots: echo of the last setBotAction).
+                    {
+                        InputFrame curIn;
+                        if (SlotInputs.TryGetValue(kv.Key, out curIn))
+                            _sb.Append(",\"in\":[").Append(curIn.StickX.ToString("0.00", ci))
+                               .Append(",").Append(curIn.Buttons).Append("]");
+                    }
                     _sb.Append("}");
                 }
                 _sb.Append("]");   // close ents
