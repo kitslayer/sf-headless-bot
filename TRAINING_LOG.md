@@ -377,3 +377,31 @@ collection: 98,057 pairs / 1,974 eps, teacher win 0.48 overall, 75% of
 kept; re-cloned into 808k -> ppo_headless_816000_steps.zip (move acc
 0.978) + BC_INIT_816000 archive. PPO resumed from it (verified). Pre-BC
 win band for comparison: 0.05-0.15, fell ~0.13.
+
+## 2026-06-12 (night) — KickstartPPO + HP-25 curriculum stage live
+
+Research pass (Kickstarting/DAPG/PIRLNav/VPT/JSRL + fighting-game DRL):
+plain BC died twice for textbook reasons — stale critic shreds the clone
+(no warmup) and nothing anchors the teacher during RL. Deployed, after
+subagent review caught the stale-supervisor trap (plain PPO had already
+overwritten the 816k BC seed at 21:25 — restored from BC_INIT_816000):
+
+- **KickstartPPO** (commit 8579a1b): phase A 808k→858k = policy tower
+  frozen, value-head-only recalibration vs the clone's own rollouts;
+  phase B = unfreeze + fresh Adam + 50k LR warmup + BC cross-entropy
+  anchor λ=0.5 → 0 linearly by 1.258M. Absolute-ts anchors survive
+  relaunches; λ clamped above; n_epochs=10 + target_kl=0.02;
+  VecNormalize stats frozen.
+- **Stage 0a: SF_STAGE_HP=25** (fleet.env): stock HP option scales
+  damage 4x, so a kill = ~1 clip — the win signal PPO could never credit
+  at 100 HP becomes dense. Demos stay on-distribution (health display
+  is unchanged; only damage scales). Ramp 25→(50)→100 on gate
+  win≥0.8 ∧ fell≤0.1, measured by DETERMINISTIC eval (rolling means
+  swing ±0.06 from churn — research trap #6; eval script TODO).
+- Curriculum (research (c)): 0a HP25 dummy → 0b HP100 dummy → 1 moving
+  dummy → 2 weakened scripted (AIM_NOISE/REACTION anneal) → 3 self-play
+  pool + scripted ~20% → 4 self-play + gradual map pool. Recollect
+  teacher demos at each opponent change.
+
+Verified at boot: resume from restored 816k, 98k-pair kickstart banner,
+vecnorm frozen, fleet asserting OptionsHolder.HP=25, slots RL-driven.
