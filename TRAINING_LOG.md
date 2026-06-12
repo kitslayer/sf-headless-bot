@@ -405,3 +405,9 @@ overwritten the 816k BC seed at 21:25 — restored from BC_INIT_816000):
 
 Verified at boot: resume from restored 816k, 98k-pair kickstart banner,
 vecnorm frozen, fleet asserting OptionsHolder.HP=25, slots RL-driven.
+
+**23:50 — kickstart phase B engaged on schedule** (ts 859k): policy
+unfrozen, fresh Adam, LR warmup over 50k, λ=0.496 decaying. bc_loss=0.285
+≈ the clone's final pretrain loss → phase A preserved the teacher
+behavior while the critic recalibrated. Now watching win/fell as RL
+starts moving the policy at HP-25.
