@@ -365,3 +365,15 @@ ppo_headless_808000_steps.zip + BC_INIT_808000 archive. PPO resumed from
 it (verified in train.log). Subagent-reviewed; ops trap confirmed live:
 fleet.sh stop pattern-kills cost one wrapper shell (self-match again —
 use separate calls). Watch win_mean: pre-BC band was 0.05-0.15.
+
+## 2026-06-12 (evening) — BC round 2: 98k pairs from the safer teacher
+
+First clone (21k pairs) didn't lift wins (0.02-0.07, fell up to ~0.21-0.27
+— cloned the teacher's decisiveness without edge discipline; 85% of demo
+moves were one direction). Per Miles: more data, not more epochs. Teacher
+edge-safety patch (4f8b118): two-band void veto (soft 4.5m input veto,
+hard 3m forced inward step) + skip weapons in the edge band. 150-min
+collection: 98,057 pairs / 1,974 eps, teacher win 0.48 overall, 75% of
+kept; re-cloned into 808k -> ppo_headless_816000_steps.zip (move acc
+0.978) + BC_INIT_816000 archive. PPO resumed from it (verified). Pre-BC
+win band for comparison: 0.05-0.15, fell ~0.13.
