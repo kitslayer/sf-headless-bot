@@ -1,25 +1,60 @@
 # SF Headless Bot Host
 
-A headless, server-side **bot arena** for *Stick Fight: The Game*. It runs the
-real game binary in batch mode (no rendering) and spawns N in-process scripted
-bots that fight each other using the **stock game physics and combat code** —
-no external client, no rendering, no human input. Built for generating
-self-play / training data for a reinforcement-learning agent.
+A headless, server-side **RL training arena** for *Stick Fight: The Game*. It
+runs the real game binary in batch mode (no rendering), exposes a UDP JSON
+bridge per instance, and trains a PPO agent against it — plus an in-process
+scripted **teacher** used for imitation-learning bootstraps. Stock game physics
+and combat code throughout — the defining design rule is that **every spawn /
+move / revive / death step mirrors stock Stick Fight 1:1**, so behavior matches
+the real game and trained policies transfer.
 
-It's a BepInEx plugin that extends a Stick Fight dedicated-server plugin with a
-bot layer. The defining design rule: **every spawn / move / revive / death step
-mirrors stock Stick Fight 1:1**, so behavior matches the real game and trained
-policies transfer.
+## Architecture
 
-## What it does
+```
+StickFight.exe -batchmode  (xvfb, Wine/Proton, N instances)
+ └ SFHeadlessHost.dll (BepInEx plugin)
+    ├ stock-faithful spawn/revive/round lifecycle
+    ├ scripted driver: teacher core (weapon fetch, engage band,
+    │   pulsed fire, two-band void veto) for non-RL slots
+    ├ UDP JSON bridge (ports 1341+i): ping / snapshot / setBotAction /
+    │   loadMap / inspect / ...  Snapshots carry per-slot obs fields
+    │   (kinematics, hp, weapon state, 16-ray terrain fan, projectiles,
+    │   ground weapons) and each slot's exact InputFrame ("in") — the
+    │   demo label stream.
+    └ curriculum knobs via env vars (fixed map, stage HP, void box, ...)
 
-- Boots `StickFight.exe -batchmode -nographics` under a virtual display (xvfb).
-- Spawns bots in player slots at the loaded map's real spawn points.
-- Drives each bot every physics tick (walk toward nearest opponent + melee).
-- Runs the stock match lifecycle: fight → death → round advance → new map →
-  revive → fight again, indefinitely.
-- Scales horizontally: launch multiple instances on different UDP ports, each
-  in its own Wine prefix.
+python/
+ ├ sf_headless_env.py      Gym env, 78-dim obs, auto-aim, MultiDiscrete
+ │                         [move(3), jump(2), fire(2)], kill-biased reward
+ │                         (damage asym, per-hit floor, pickup + armed
+ │                         trickle, fast-kill bonus)
+ ├ train_headless_ppo.py   PPO + KickstartPPO (decaying BC anchor on
+ │                         teacher demos, critic-warmup phase, LR warmup,
+ │                         frozen VecNormalize) with auto-resume
+ ├ collect_demos.py        records (obs, exact teacher action) pairs from
+ │                         teacher-driven instances; drops teacher deaths
+ ├ bc_pretrain.py          behavior-clones a demo set into the latest
+ │                         checkpoint (policy tower only)
+ └ sf_viewer.py            live pygame viewer of any instance
+```
+
+Orchestration: `scripts/fleet.sh start|stop|restart N` (writes `run/fleet.env`,
+the single source of truth the instances source), `scripts/watchdog.sh`
+(restarts dead/hung instances, desync jitter), `scripts/train_supervisor.sh`
+(keeps the trainer alive, resumes from checkpoints, stall detection).
+
+## Training pipeline (current)
+
+1. **Stage curriculum** (gates: deterministic-eval win ≥ 0.8, falls ≤ 0.1):
+   stationary dummy at `SF_STAGE_HP=25` (the stock HP option scales damage,
+   so kills are ~1 clip) → HP 100 → moving dummy → weakened scripted bot →
+   self-play pool. Fixed map per stage.
+2. **Imitation bootstrap**: run the fleet with `SFGYM_RL_SLOTS=1` so the
+   teacher drives slot 0, `collect_demos.py` for ~2h (~100k pairs), then
+   `bc_pretrain.py` → checkpoint, then back to `SFGYM_RL_SLOTS=0,1`.
+3. **KickstartPPO**: resumes from the clone; value head recalibrates first
+   (policy frozen), then PPO trains with a BC anchor that decays to zero.
+   Recollect demos whenever the opponent stage changes.
 
 ## Build
 
@@ -45,33 +80,35 @@ cp bin/Release/SFHeadlessHost.dll <game>/BepInEx/plugins/
 ## Run
 
 ```bash
-SFGYM_BOT_SLOTS=0,1 bash scripts/launch_oracle.sh 0     # instance 0, UDP 1337
-SFGYM_BOT_SLOTS=0,1 bash scripts/launch_oracle.sh 1     # instance 1, UDP 1338
+# RL training fleet (4 instances, slots 0+1 driven by Python):
+SFGYM_RL_SLOTS=0,1 bash scripts/fleet.sh start 4
+bash scripts/watchdog.sh 4 60 300 &
+bash scripts/train_supervisor.sh 4 50000000 &
+
+# demo collection mode (slot 0 = teacher):
+SFGYM_RL_SLOTS=1 bash scripts/fleet.sh restart 4   # ALWAYS restart, not start
+python python/collect_demos.py --minutes 120
+python python/bc_pretrain.py
 ```
 
-Each instance is independent — run as many as the box has CPU for.
-
-### Environment
+### Environment (via `run/fleet.env`, written by `fleet.sh start`)
 
 | Var | Default | Meaning |
 |---|---|---|
-| `SFGYM_BOT_SLOTS` | `0,1` | Comma-separated player slots (0–3) to fill with bots |
-| `SFHEADLESS_PORT` | `1337` | UDP port (set per instance) |
-| `SFHEADLESS_DEBUG` | `1` | Verbose logging |
+| `SFGYM_BOT_SLOTS` | `0,1` | Slots the host spawns and lifecycle-manages |
+| `SFGYM_RL_SLOTS` | — | Subset driven externally via `setBotAction` (others get the scripted teacher) |
+| `SF_FIXED_MAP` | — | Pin every round to one scene (curriculum) |
+| `SF_STAGE_HP` | 100 | Stock HP option (scales damage; 25 = ~1-clip kills) |
+| `SF_VOID_Y` / `SF_VOID_Z` | per-map | Kill-floor / edge coordinates for the obs void features |
+| `SF_BOT_STALL_SECS` | — | Round-advance timer when no HP changes |
+| `SFHEADLESS_PORT` | `1337` | Game UDP port (bridge is `port+4`) |
 
-## How the 1:1 pipeline works
+## Physics notes (corrected 2026-06-12)
 
-```
-AutoSpawnBots
-  └ TrySpawnPlayer at currentMapInfo.spawnPoints[slot].localPosition
-  └ ConfigureBotRig         (mHasControl, SetCollision(true), Standing/Fighting)
-  └ RegisterRigWithControllerHandler   (adds Controller to the player list)
-  └ ReviveSpawnedBot        (GameManager.RevivePlayer → health=100)
-  └ MoveBotToSpawnPoint     (invokes the stock private MovePlayer coroutine)
-DriveScriptedBots  (each FixedUpdate)
-  └ DetectAndApplyDeath     (flip isDead + drop weapon when HP ≤ 0)
-  └ walk toward nearest opponent + periodic swing
-```
+The real game ticks at **60 Hz** (`fixedDeltaTime 0.01667`) and runs
+**gravity -20** — not Unity's 50 Hz / -9.81 defaults that older docs claimed.
+Raycasts do not hit triggers. All simulation constants in this repo use the
+corrected values.
 
 Death detection note: in a network match the stock death path broadcasts over
 Steam P2P, which isn't initialized headless. So death is applied locally
