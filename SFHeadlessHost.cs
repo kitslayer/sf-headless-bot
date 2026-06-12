@@ -7682,9 +7682,12 @@ namespace SFHeadlessHost
                 Log.LogError($"SF server bind on {BindPort} threw: {e}");
                 return;
             }
-            // Default tickrate: 60Hz on both server and client (was Unity's
-            // stock 50Hz). Client plugin sets the same in SFClientRecon.Awake.
-            // Operator can change live with /tickrate N.
+            // Default tickrate: 60Hz on both server and client. NOTE: the
+            // game's own TimeManager asset already ships 0.01666 (60Hz) — the
+            // old "Unity stock 50Hz" belief across sf docs was wrong (verified
+            // against the real ProjectSettings dump 2026-06-12), so this line
+            // is a defensive no-op. Client plugin sets the same in
+            // SFClientRecon.Awake. Operator can change live with /tickrate N.
             Time.fixedDeltaTime = 1f / 60f;
             {
                 float fd = Time.fixedDeltaTime;

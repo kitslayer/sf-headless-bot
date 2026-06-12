@@ -65,7 +65,11 @@ def _fleet_cfg(name: str, default: float) -> float:
 _VOID_Y = _fleet_cfg("SF_VOID_Y", -11.5)   # kill-floor Y (Desert3 default)
 _VOID_Z = _fleet_cfg("SF_VOID_Z", 19.0)    # horizontal edge |z| (Desert3 default)
 _VOID_SPAN = 2.0 * _VOID_Z
-_G = 9.81
+# SF's actual Physics.gravity is -20, NOT Unity's -9.81 default (verified by
+# Miles against the real TimeManager/ProjectSettings dump, 2026-06-12 — the
+# old docs were wrong; physics also ticks at 60Hz not 50). With 9.81 this
+# predictor told the agent it had ~2x longer before void impact than reality.
+_G = 20.0
 _VOID_HORIZON = 1.2      # seconds for the predictive look-ahead
 
 
