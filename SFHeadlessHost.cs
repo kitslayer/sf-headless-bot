@@ -3617,6 +3617,14 @@ namespace SFHeadlessHost
         }
         private int _relayAllCount;
         private float _pendingRoundAdvanceAt = -1f;
+        // Non-re-entrancy latch: true from the moment a round advance begins
+        // (AdvanceRound) until the respawn cycle completes (AutoSpawnBots spawns
+        // both bots, or the spawned<2 self-heal re-advances, or a force-complete
+        // path resets oracle state). While set, death-triggered TryScheduleRoundAdvance
+        // calls are ignored — this stops a 2nd bot's death (self-play duels) from
+        // re-firing AdvanceRound mid-respawn and restarting the respawn chain from
+        // zero (empty-round wedge). MUST clear on every exit path.
+        private bool _roundAdvanceInFlight;
 
         private int CountInitializedSfClients()
         {
@@ -3683,11 +3691,27 @@ namespace SFHeadlessHost
             catch { return true; }
         }
 
-        /// <summary>Death signal — clears gate and schedules next map (queues during map load).</summary>
+        /// <summary>Death signal — schedules next map (queues during map load).</summary>
         internal void ScheduleRoundAdvanceOnDeath(string reason)
         {
             AcResetRound();
-            ClearRoundAdvanceBlockedGate(reason);
+            // (d) Don't let a death-triggered advance bypass a CONFIGURED min-play
+            // gate. With the default RoundMinPlaySec=0 the gate is already expired,
+            // so this clear was a no-op anyway; we keep it only in that case to
+            // preserve exact prior behavior. When SF_ROUND_MIN_PLAY>0, the gate is
+            // there on purpose (enforce a floor on round length) and a death must
+            // NOT defeat it.
+            // TODO: when RoundMinPlaySec>0, a death that lands DURING the grace
+            // window is currently dropped by TryScheduleRoundAdvance (the dead slot
+            // is already in _deathSlotsHandled, so TickAuthRigDeathCheck won't
+            // re-fire after the grace expires). If we ever ship a non-zero default
+            // min-play, add a "queue the advance until grace expires" path (mirror
+            // _roundAdvanceQueuedAfterMapLoad) so the round can't wedge. The latch
+            // (a) + survivor gate (b) already prevent the empty-round wedge that
+            // motivated this fix, so this is a latent edge only under a non-default
+            // knob — flagged rather than silently risked.
+            if (RoundMinPlaySec <= 0f)
+                ClearRoundAdvanceBlockedGate(reason);
             TryScheduleRoundAdvance(reason);
         }
 
@@ -3720,6 +3744,11 @@ namespace SFHeadlessHost
 
         private void TryScheduleRoundAdvance(string reason)
         {
+            if (_roundAdvanceInFlight)
+            {
+                Log.LogInfo($"[SF] Round advance ignored ({reason}): respawn in flight.");
+                return;
+            }
             if (_pendingRoundAdvanceAt >= 0f) return;
             float now = Time.realtimeSinceStartup;
             if (_roundAdvanceBlockedUntil > 0f && now < _roundAdvanceBlockedUntil)
@@ -3785,8 +3814,26 @@ namespace SFHeadlessHost
                 if ((object)kv.Value == null) continue;
                 if (!TryGetRigIsDead(kv.Value)) continue;
                 _deathSlotsHandled.Add(kv.Key);
-                Log.LogInfo($"[DEATH] Auth rig slot {kv.Key} isDead — scheduling round advance.");
-                ScheduleRoundAdvanceOnDeath($"auth-rig-dead slot={kv.Key}");
+                // Survivor-count gate (mirrors stock KillPlayer's num<=1): only END
+                // the round when ≤1 rig is still alive. In a self-play duel BOTH
+                // bots can die ~simultaneously; without this gate, death #2 re-fires
+                // AdvanceRound mid-respawn and wedges the instance in empty rounds.
+                // Single-death (hold/patrol) still leaves alive==1 → still advances.
+                int alive = 0;
+                foreach (var rkv in SlotToRig)
+                {
+                    if ((object)rkv.Value == null) continue;
+                    if (!TryGetRigIsDead(rkv.Value)) alive++;
+                }
+                if (alive <= 1)
+                {
+                    Log.LogInfo($"[DEATH] Auth rig slot {kv.Key} isDead, alive={alive} — scheduling round advance.");
+                    ScheduleRoundAdvanceOnDeath($"auth-rig-dead slot={kv.Key}");
+                }
+                else
+                {
+                    Log.LogInfo($"[DEATH] Auth rig slot {kv.Key} isDead, alive={alive} (>1) — not advancing yet.");
+                }
             }
         }
 
@@ -3850,6 +3897,10 @@ namespace SFHeadlessHost
 
         private void AdvanceRound()
         {
+            // Latch the respawn cycle so a second death mid-respawn can't re-fire
+            // a nested round advance. Cleared in AutoSpawnBots (success or self-heal)
+            // and ResetOracleStateForRoundAdvance (force-complete backstop).
+            _roundAdvanceInFlight = true;
             ResetDeathTrackingForNewRound();
             _roundCounter++;
             int nextScene;
@@ -3888,6 +3939,10 @@ namespace SFHeadlessHost
             _oracleCountDownAt = -1f;
             _oracleCountDownFired = false;
             ResetOracleStateForRoundAdvance();
+            // ResetOracleStateForRoundAdvance clears the latch as a force-complete
+            // backstop; re-assert it here so the normal advance→respawn window stays
+            // latched until AutoSpawnBots (success or self-heal) releases it.
+            _roundAdvanceInFlight = true;
             ClearMapDataObjectsOnOracle();
             _cachedGroundWeaponsBody = null;
             _groundWeaponsEntryCount = 0;
@@ -3901,6 +3956,13 @@ namespace SFHeadlessHost
         /// <summary>Let the next round re-register map sync, NSOs, and auth rigs on the new scene.</summary>
         private void ResetOracleStateForRoundAdvance()
         {
+            // Backstop: ensure the non-re-entrancy latch can't deadlock if this
+            // oracle-state reset is ever reached from a force-complete / map-timeout
+            // path that doesn't run through AutoSpawnBots. NOTE: AdvanceRound() calls
+            // this synchronously and RE-ASSERTS _roundAdvanceInFlight=true immediately
+            // after, so the normal advance→respawn window stays latched until
+            // AutoSpawnBots completes.
+            _roundAdvanceInFlight = false;
             _authSpawnDone = false;
             _authSpawnAt = -1f;
             _nsoInventoryDone = false;
@@ -4590,6 +4652,9 @@ namespace SFHeadlessHost
             }
             Log.LogInfo($"[bot-spawn] done — spawned {spawned}/{AutoSpawnBotSlots.Count} bots.");
             _botScriptedDriveActive = (spawned >= 2);
+            // Respawn cycle completed: release the non-re-entrancy latch so future
+            // deaths can schedule the next round advance again.
+            _roundAdvanceInFlight = false;
             // Self-heal: a proper 1v1 needs 2 bots. If the current scene can't
             // host them (bad/non-combat map), skip it by advancing the round to
             // a different scene instead of sitting idle forever.
@@ -4598,6 +4663,8 @@ namespace SFHeadlessHost
                 Log.LogWarning($"[bot-spawn] only {spawned} bot(s) spawned on this scene — advancing round to find a playable map.");
                 // Tear down any partial rig so the next scene starts clean.
                 try { ClearAuthoritativeRigsForRoundAdvance(); } catch { }
+                // Latch already cleared above so this intentional self-heal
+                // re-advance isn't blocked by TryScheduleRoundAdvance's gate.
                 ScheduleRoundAdvanceOnDeath("bot-spawn-insufficient");
             }
         }
@@ -5850,6 +5917,10 @@ namespace SFHeadlessHost
             foreach (var kv in SlotToRig)
             {
                 if (kv.Key == p.OwnerSlot) continue;
+                // Don't deal damage to corpses — stock SF stops applying damage once
+                // isDead. Without this, projectiles keep "hitting" a dead ragdoll and
+                // overkill it to ~-1900 HP during the respawn window.
+                if (TryGetRigIsDead(kv.Value)) continue;
                 var rig = kv.Value;
                 if ((object)rig == null) continue;
                 Vector3 rigPos = rig.transform.position;

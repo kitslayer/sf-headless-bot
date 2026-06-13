@@ -64,7 +64,7 @@ while true; do
       # file is absent the env auto-loads the latest models/ checkpoint at launch.
       [ -f "$BOTDIR/run/SELFPLAY_CKPT" ] && export SF_SELFPLAY_CKPT="$(cat "$BOTDIR/run/SELFPLAY_CKPT")"
       nohup python train_headless_ppo.py --instances "$INSTANCES" --base-bridge 1341 \
-        --steps "$STEPS" --save-every 8000 --opp-mode patrol $KS_ARGS >> "$BOTDIR/logs/train.log" 2>&1 ) &
+        --steps "$STEPS" --save-every 8000 --opp-mode selfplay $KS_ARGS >> "$BOTDIR/logs/train.log" 2>&1 ) &
     anchor_ts=-1; anchor_time=$(date +%s)   # reset stall tracking for the fresh trainer
     sleep 10
   else
