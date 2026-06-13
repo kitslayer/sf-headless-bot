@@ -57,6 +57,12 @@ while true; do
       if [ -f "$BOTDIR/run/USE_KICKSTART" ] && [ -f "$BOTDIR/demos/teacher_demos.npz" ]; then
         KS_ARGS="--kickstart-demos $BOTDIR/demos/teacher_demos.npz --ks-coef 0.5 --ks-anchor 858000 --ks-decay 400000 --ks-warmup-until 858000"
       fi
+      # Self-play (stage 2, 2026-06-13): the opponent slot is driven by a FROZEN
+      # PPO snapshot inside the env (SFGYM_RL_SLOTS=0,1 so the env owns both
+      # slots). The frozen-opp checkpoint is PINNED in run/SELFPLAY_CKPT (league
+      # refresh = overwrite that file with a newer snapshot + restart); if the
+      # file is absent the env auto-loads the latest models/ checkpoint at launch.
+      [ -f "$BOTDIR/run/SELFPLAY_CKPT" ] && export SF_SELFPLAY_CKPT="$(cat "$BOTDIR/run/SELFPLAY_CKPT")"
       nohup python train_headless_ppo.py --instances "$INSTANCES" --base-bridge 1341 \
         --steps "$STEPS" --save-every 8000 --opp-mode patrol $KS_ARGS >> "$BOTDIR/logs/train.log" 2>&1 ) &
     anchor_ts=-1; anchor_time=$(date +%s)   # reset stall tracking for the fresh trainer

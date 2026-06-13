@@ -647,8 +647,16 @@ class SFHeadlessEnv(gym.Env):
             # opponent shot us — a normal combat loss, lighter: -0.5). This
             # split is only meaningful because a selfplay opp can deal lethal
             # damage; against hold/patrol nearly all deaths are falls so it
-            # mostly reads -1.0, which is fine (don't fall).
-            reward -= 1.0 if my_y < -3.0 else 0.5
+            # mostly reads -1.0.) 2026-06-13: made opp_mode-AWARE after the
+            # self-play deploy was reverted — on hold/patrol (opp can't kill, so
+            # every death IS a fall) the uniform -0.5 is the KNOWN-GOOD value
+            # that let patrol train cleanly; -1.0 there risks the stationary-
+            # dummy timidity. The fall(-1.0) vs combat-death(-0.5) split applies
+            # only when the opponent can deal lethal damage (selfplay/scripted).
+            if self.opp_mode in ("selfplay", "scripted"):
+                reward -= 1.0 if my_y < -3.0 else 0.5
+            else:
+                reward -= 0.5
             terminated = True
         elif cur_round != self._round:
             terminated = True  # round advanced (stall/other) — episode boundary
