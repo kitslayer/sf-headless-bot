@@ -473,3 +473,19 @@ forced state-conditioned navigation the fixed-spawn setup never allowed.
 Plan: deterministic eval at ~900k for the true number; if it confirms
 ~0.15+ win / <0.1 fell sustained, this is the first stage-gate-credible
 policy — then consider HP-50 step.
+
+## 2026-06-13 05:58 — DETERMINISTIC EVAL: win ~0.45, fell ~0.05 (the rolling metric was lying)
+
+eval_checkpoint.py (argmax) on the 888k ckpt, dedicated bridge 1349, 20
+episodes before the unwatched eval instance hung: **win 0.45, fell 0.05** —
+vs the stochastic rollout win_mean of ~0.08. Exploration noise was
+undercounting ~5x: the GREEDY policy already wins ~45% vs the HP-25 dummy
+and almost never falls. Opposite of the BC clone (worse deterministically,
+0.83 falls) — this clean pure-PPO + slot-swap policy is genuinely
+competent and just samples sub-optimally in training. 20-ep CI ~±0.22 but
+the conclusion is robust.
+
+Gate (deterministic win>=0.8 & fell<=0.1): FELL PASSES (0.05); WIN 0.45 ->
+0.8 needed. So keep training at HP-25, let greedy win climb, re-eval
+~1.0M+. Do NOT advance HP yet. NOTE for future evals: add the 5th instance
+to the watchdog or accept ~20-ep samples (it hung at 20/40 here).
