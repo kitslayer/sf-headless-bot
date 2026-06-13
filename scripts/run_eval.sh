@@ -9,9 +9,10 @@
 # eval_checkpoint.py prints win/fell/arms/hits/len every 5 eps, so a run that
 # wedges before the requested count still yields a usable partial breakdown.
 #
-#   scripts/run_eval.sh [EPISODES] [CKPT]
+#   scripts/run_eval.sh [EPISODES] [CKPT] [OPP_MODE]
 #     EPISODES  default 40
 #     CKPT      default = latest models/ppo_headless_*_steps.zip
+#     OPP_MODE  hold (default) | patrol | scripted — match how the ckpt trained
 #
 # NOTE on the pkill self-match trap (hit 2026-06-13): do NOT teardown with
 # `pkill -f 'launch_oracle.sh 8'` from inside a script whose own cmdline holds
@@ -22,6 +23,7 @@ BOTDIR="$HOME/stickfight-bot/sf-headless-bot"
 VENV="$HOME/stickfight-bot/.venv/bin/python"
 EPS="${1:-40}"
 CKPT="${2:-}"
+OPP="${3:-hold}"
 cd "$BOTDIR"
 LOG="logs/eval_$(date +%Y%m%d_%H%M%S).log"
 ready=0

@@ -56,6 +56,9 @@ def main():
                     help="VecNormalize .pkl (default: matched by step number)")
     ap.add_argument("--deterministic", action="store_true", help="argmax actions (default: sampled)")
     ap.add_argument("--max-steps", type=int, default=600)
+    ap.add_argument("--opp-mode", default="hold", choices=["hold", "patrol", "scripted"],
+                    help="opponent the eval faces; use 'patrol' for a stage-1-faithful "
+                         "number (must match how the checkpoint was trained)")
     args = ap.parse_args()
 
     ckpt = args.checkpoint or latest_checkpoint()
@@ -71,7 +74,7 @@ def main():
 
     def _thunk():
         return SFHeadlessEnv(bridge_port=args.bridge, my_slot=0, opp_slot=1,
-                             poll_hz=20.0, max_steps=args.max_steps, opp_mode="hold")
+                             poll_hz=20.0, max_steps=args.max_steps, opp_mode=args.opp_mode)
     venv = DummyVecEnv([_thunk])
     if vn and os.path.exists(vn):
         venv = VecNormalize.load(vn, venv)
