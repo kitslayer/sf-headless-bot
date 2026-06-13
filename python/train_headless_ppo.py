@@ -220,11 +220,16 @@ def main():
     ap.add_argument("--base-bridge", type=int, default=1341)
     ap.add_argument("--steps", type=int, default=5_000_000)
     ap.add_argument("--save-every", type=int, default=20_000)
-    ap.add_argument("--opp-mode", choices=["hold", "patrol", "scripted"], default="hold",
+    ap.add_argument("--opp-mode", choices=["hold", "patrol", "scripted", "selfplay"],
+                    default="hold",
                     help="hold = stationary dummy (stage 0, needs SFGYM_RL_SLOTS=0,1); "
                          "patrol = MOVING dummy (stage 1, env-driven, void-safe, "
                          "SFGYM_RL_SLOTS=0,1); "
-                         "scripted = in-plugin scripted opponent (SFGYM_RL_SLOTS=0)")
+                         "scripted = in-plugin scripted opponent (SFGYM_RL_SLOTS=0); "
+                         "selfplay = FROZEN PPO snapshot drives the opp (stage 2, "
+                         "env-driven, SFGYM_RL_SLOTS=0,1; set SF_SELFPLAY_CKPT or it "
+                         "loads the latest models/ppo_headless_*_steps.zip. v1=STATIC, "
+                         "no auto-refresh)")
     ap.add_argument("--kickstart-demos", default="",
                     help="npz of teacher (obs, act) pairs; enables the decaying "
                          "BC anchor inside PPO (KickstartPPO)")

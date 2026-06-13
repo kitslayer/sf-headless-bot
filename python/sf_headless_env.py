@@ -17,8 +17,10 @@ Episode ends when the round advances (someone died / stall timeout) or max_steps
 """
 from __future__ import annotations
 
+import glob
 import json
 import os
+import re
 import socket
 import time
 
@@ -160,6 +162,97 @@ class SFHeadlessEnv(gym.Env):
         # _build_obs and sent with every action (aimx==world-z 1:1, verified).
         self._aim_dz = 1.0
         self._aim_dy = 0.0
+        # Most recent snapshot the LEARNER obs was built from. _opp_action
+        # (selfplay) uses it so the frozen opponent reacts to the same frame the
+        # learner just saw — same cache-driven pattern as the patrol void-veto.
+        self._last_snap = None
+
+        # --- selfplay frozen opponent -------------------------------------
+        # opp_mode=="selfplay": a FROZEN PPO snapshot drives the opp slot. The
+        # learner's obs is normalized OUTSIDE the env by the trainer's
+        # VecNormalize wrapper, so the frozen opp (trained on normalized obs)
+        # needs its raw obs normalized the SAME way IN HERE before predict.
+        self._opp_model = None
+        self._opp_obs_mean = None
+        self._opp_obs_var = None
+        self._opp_obs_eps = 1e-8
+        self._opp_obs_clip = 50.0
+        if self.opp_mode == "selfplay":
+            self._load_selfplay_opponent()
+
+    # ---- selfplay opponent loading ----
+    def _load_selfplay_opponent(self):
+        """Load a frozen PPO policy + its matching VecNormalize obs stats to
+        drive the opponent slot. v1 = STATIC: loaded ONCE at construction, never
+        refreshed. Auto-refresh / league logic is intentionally out of scope —
+        see the TODO at _opp_action and the trainer-side hook note."""
+        from stable_baselines3 import PPO  # local import: only needed for selfplay
+
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        models_dir = os.path.join(repo_root, "models")
+        ckpt = os.environ.get("SF_SELFPLAY_CKPT", "")
+        if ckpt and not os.path.isabs(ckpt):
+            ckpt = os.path.join(repo_root, ckpt)
+        if not ckpt:
+            # Same selection logic as eval_checkpoint.latest_checkpoint():
+            # highest-N ppo_headless_<N>_steps.zip.
+            best_n, best = -1, None
+            for z in glob.glob(os.path.join(models_dir, "ppo_headless_*_steps.zip")):
+                m = re.search(r"ppo_headless_(\d+)_steps\.zip$", z)
+                if m and int(m.group(1)) > best_n:
+                    best_n, best = int(m.group(1)), z
+            ckpt = best
+        if not ckpt or not os.path.exists(ckpt):
+            print(f"[selfplay] WARNING: no opponent checkpoint found "
+                  f"(SF_SELFPLAY_CKPT={os.environ.get('SF_SELFPLAY_CKPT','')!r}, "
+                  f"models={models_dir}). Falling back to STATIONARY opp "
+                  f"(behaves like opp_mode='hold').")
+            return
+        self._opp_model = PPO.load(ckpt, device="cpu")
+        print(f"[selfplay] loaded frozen opponent: {os.path.basename(ckpt)}")
+
+        # Matching VecNormalize stats: prefer an env override, else the
+        # step-matched pkl next to the checkpoint (same pattern as
+        # eval_checkpoint.py). Read obs_rms mean/var + the wrapper's epsilon and
+        # clip_obs; apply np.clip((obs-mean)/sqrt(var+eps), -clip, clip).
+        vn_path = os.environ.get("SF_SELFPLAY_VECNORM", "")
+        if vn_path and not os.path.isabs(vn_path):
+            vn_path = os.path.join(repo_root, vn_path)
+        if not vn_path:
+            m = re.search(r"_(\d+)_steps\.zip$", ckpt)
+            if m:
+                vn_path = os.path.join(
+                    models_dir, f"ppo_headless_vecnormalize_{m.group(1)}_steps.pkl")
+        if vn_path and os.path.exists(vn_path):
+            # Unpickle directly rather than VecNormalize.load(): the latter
+            # calls set_venv() and needs a live venv (crashes on venv=None). We
+            # only want the frozen obs_rms / epsilon / clip_obs scalars.
+            import pickle
+            with open(vn_path, "rb") as f:
+                vn = pickle.load(f)
+            self._opp_obs_mean = np.asarray(vn.obs_rms.mean, dtype=np.float32)
+            self._opp_obs_var = np.asarray(vn.obs_rms.var, dtype=np.float32)
+            self._opp_obs_eps = float(vn.epsilon)
+            self._opp_obs_clip = float(vn.clip_obs)
+            print(f"[selfplay] loaded opponent vecnormalize stats "
+                  f"{os.path.basename(vn_path)} (clip_obs={self._opp_obs_clip}, "
+                  f"eps={self._opp_obs_eps})")
+        else:
+            print(f"[selfplay] WARNING: no vecnormalize stats for opponent "
+                  f"(looked for {vn_path!r}). The frozen opp was trained on "
+                  f"NORMALIZED obs; feeding it RAW obs may make it act "
+                  f"erratically/weakly. Proceeding with raw obs.")
+
+    def _normalize_opp_obs(self, obs):
+        """Normalize the opponent's raw obs with its frozen VecNormalize stats,
+        exactly mirroring SB3 VecNormalize.normalize_obs. Identity if no stats
+        were loaded (warned at construction)."""
+        if self._opp_obs_mean is None:
+            return obs
+        return np.clip(
+            (obs - self._opp_obs_mean) / np.sqrt(self._opp_obs_var + self._opp_obs_eps),
+            -self._opp_obs_clip, self._opp_obs_clip,
+        ).astype(np.float32)
 
     # ---- bridge I/O ----
     def _rpc(self, obj, wait=0.4):
@@ -184,13 +277,17 @@ class SFHeadlessEnv(gym.Env):
     def _hold_opp(self):
         # Drive the opponent slot for curriculum stages where the ENV (not the
         # in-host scripted bot) controls it.
-        #   "hold"   -> stationary dummy (stage 0).
-        #   "patrol" -> MOVING dummy (stage 1): walks back and forth, NEVER
-        #               fires or aims at us. Void-SAFE by construction — a
-        #               two-band veto on the dummy's OWN z keeps |z| < ~14 so
-        #               it can't self-destruct (a fallen opp = opp_dead = a
-        #               FREE win that would corrupt win_mean).
-        if self.opp_mode == "hold":
+        #   "hold"     -> stationary dummy (stage 0).
+        #   "patrol"   -> MOVING dummy (stage 1): walks back and forth, NEVER
+        #                 fires or aims at us. Void-SAFE by construction — a
+        #                 two-band veto on the dummy's OWN z keeps |z| < ~14 so
+        #                 it can't self-destruct (a fallen opp = opp_dead = a
+        #                 FREE win that would corrupt win_mean).
+        #   "selfplay" -> a FROZEN PPO snapshot drives the opp (real opponent,
+        #                 aims at + fights the learner). See _opp_action.
+        if self.opp_mode == "selfplay":
+            self._opp_action(self._last_snap)
+        elif self.opp_mode == "hold":
             self._send_nowait({"cmd": "setBotAction", "slot": self.opp_slot,
                                "mx": 0.0, "my": 0.0, "aimx": 1.0, "aimy": 0.0, "buttons": 0})
         elif self.opp_mode == "patrol":
@@ -217,6 +314,49 @@ class SFHeadlessEnv(gym.Env):
                 mx = 0.0             # in +z soft band, don't head further +z
             self._send_nowait({"cmd": "setBotAction", "slot": self.opp_slot,
                                "mx": mx, "my": 0.0, "aimx": 1.0, "aimy": 0.0, "buttons": 0})
+
+    def _opp_action(self, snap):
+        """opp_mode=="selfplay": a frozen PPO snapshot drives the OPPONENT slot.
+        Mirrors _send_action exactly, but for self.opp_slot and with the opp
+        aiming at the LEARNER. v1 = STATIC (loaded once at construction).
+
+        TODO(selfplay refresh, trainer-side): for league/auto-refresh, the
+        trainer should periodically (a) save the current policy to a snapshot
+        zip + vecnormalize pkl, then (b) tell each subproc env to reload its
+        frozen opponent (e.g. a `setSelfplayCkpt` env method invoked via
+        VecEnv.env_method, or simply re-`_load_selfplay_opponent()`), sampling
+        from a pool of past snapshots for stability. Nothing in THIS file needs
+        to change for that beyond a public reload hook. Left out of v1.
+        """
+        # If the model failed to load (no checkpoint), behave like a stationary
+        # dummy so training still proceeds with a clear warning already printed.
+        if self._opp_model is None:
+            self._send_nowait({"cmd": "setBotAction", "slot": self.opp_slot,
+                               "mx": 0.0, "my": 0.0, "aimx": 1.0, "aimy": 0.0,
+                               "buttons": 0})
+            return
+        # Build the opp's obs from ITS perspective (me=opp_slot, opp=my_slot),
+        # normalize with the frozen stats, sample an action.
+        obs, op_me, op_op = self._build_obs_for(snap, self.opp_slot, self.my_slot)
+        obs_n = self._normalize_opp_obs(obs)
+        action, _ = self._opp_model.predict(obs_n, deterministic=False)
+        move, jump, fire = int(action[0]), int(action[1]), int(action[2])
+        mx = (-1.0 if move == 0 else (1.0 if move == 2 else 0.0))
+        buttons = (1 if jump else 0) | (2 if fire else 0)
+        # Aim at the LEARNER. Same convention as _send_action: world aim
+        # z = -AimX, y = +AimY, so to point from the opp at the learner we send
+        # aimx = -dz, aimy = dy where (dz,dy) is the normalized direction
+        # opp->learner. op_me = opp ent (shooter), op_op = learner ent (target).
+        aimx, aimy = 1.0, 0.0
+        if op_me is not None and op_op is not None:
+            dz = float(op_op.get("z", 0.0)) - float(op_me.get("z", 0.0))
+            dy = float(op_op.get("y", 0.0)) - float(op_me.get("y", 0.0))
+            mag = (dz * dz + dy * dy) ** 0.5
+            if mag > 1e-3:
+                aimx, aimy = -dz / mag, dy / mag
+        self._send_nowait({"cmd": "setBotAction", "slot": self.opp_slot,
+                           "mx": mx, "my": 0.0, "aimx": aimx, "aimy": aimy,
+                           "buttons": buttons})
 
     def _send_action(self, action):
         move, jump, fire = int(action[0]), int(action[1]), int(action[2])
@@ -246,12 +386,30 @@ class SFHeadlessEnv(gym.Env):
         return None
 
     def _build_obs(self, snap):
-        me = self._ent(snap, self.my_slot)
-        op = self._ent(snap, self.opp_slot)
-        # Cache the opponent's z every obs build (reset + step) so the patrol
-        # void-veto in _hold_opp always has a fresh position to clamp against.
-        if op is not None:
-            self._last_opp_z = float(op.get("z", self._last_opp_z))
+        # Learner-perspective obs. Thin wrapper over _build_obs_for so the
+        # learner's observation is byte-identical to the pre-selfplay code.
+        return self._build_obs_for(snap, self.my_slot, self.opp_slot)
+
+    def _build_obs_for(self, snap, me_slot, opp_slot):
+        # Build the 78-dim ego-relative obs from `me_slot`'s perspective, with
+        # `opp_slot` as the opponent. Used both for the LEARNER (me=my_slot) and,
+        # under opp_mode="selfplay", for the FROZEN opponent (me=opp_slot). The
+        # math is slot-symmetric; only the cached per-learner state (aim
+        # direction, last opp z, last snapshot) is updated, and ONLY when this
+        # call is for the learner — guarded by `is_learner` so the opponent's
+        # obs build can never perturb the learner's _send_action aim or the
+        # patrol void-veto.
+        is_learner = (me_slot == self.my_slot)
+        me = self._ent(snap, me_slot)
+        op = self._ent(snap, opp_slot)
+        # Cache the opponent's z every LEARNER obs build (reset + step) so the
+        # patrol void-veto in _hold_opp always has a fresh position to clamp
+        # against. Also stash the whole snap so _opp_action (selfplay) can build
+        # the opp obs against the most recent frame without re-polling.
+        if is_learner:
+            self._last_snap = snap
+            if op is not None:
+                self._last_opp_z = float(op.get("z", self._last_opp_z))
 
         def feats(e):
             # 19 per-ent features: kinematics(6) + hp/alive/armed(3) + Tier-2/3
@@ -283,11 +441,15 @@ class SFHeadlessEnv(gym.Env):
             # opp predicted relative position at 0.3s (velocity lead — Tier-3
             # aim help). of[4]=opp vy, of[5]=opp vz; mf[4/5]=self vy/vz.
             pred = [dz + (of[5] - mf[5]) * 0.3, dy + (of[4] - mf[4]) * 0.3]
-            # refresh the auto-aim direction (normalized YZ toward opponent)
-            mag = (dz * dz + dy * dy) ** 0.5
-            if mag > 1e-3:
-                self._aim_dz = dz / mag
-                self._aim_dy = dy / mag
+            # refresh the LEARNER's auto-aim direction (normalized YZ toward its
+            # opponent). Only for the learner's call — the opponent's aim is
+            # computed independently in _opp_action, so this cache must never be
+            # touched by the opp obs build or _send_action would aim wrong.
+            if is_learner:
+                mag = (dz * dz + dy * dy) ** 0.5
+                if mag > 1e-3:
+                    self._aim_dz = dz / mag
+                    self._aim_dy = dy / mag
         else:
             rel = [0.0, 0.0, 0.0, 0.0]
             pred = [0.0, 0.0]
@@ -456,6 +618,10 @@ class SFHeadlessEnv(gym.Env):
 
         terminated = False
         cur_round = snap.get("round") if snap else self._round
+        # Our y, computed BEFORE the death branches so the death penalty can
+        # distinguish a FALL from a combat-death (also reused by the `fell`
+        # telemetry below).
+        my_y = float(me.get("y", 0.0)) if me else 0.0
         # Death requires the ent to be PRESENT (review fix 2026-06-09): a
         # snapshot timeout (snap=None) or a momentarily missing ent used to
         # zero both hp's and fabricate a loss — or a +1.0 WIN — polluting both
@@ -472,17 +638,18 @@ class SFHeadlessEnv(gym.Env):
         elif self_dead:
             # Death penalty history: -1.0 (orig) -> -0.5 (2026-06-06, fall
             # variance) -> -1.0 (2026-06-13, to cut fell 0.25) -> -0.5 AGAIN
-            # (2026-06-13). The -1.0 BACKFIRED: a deterministic eval at 1016k
-            # (24k steps post-doubling) showed fell DID drop to 0.00, but the
-            # greedy policy went PASSIVE — win 0.45->0.04, arms 0.95->0.04. The
-            # dummy sits ~3u from the void edge, so "don't die" collapsed into
-            # "don't approach the dummy at all" — falls and the kill objective
-            # are in geometric tension on a stationary-near-edge target, so a
-            # death penalty can't fix falls here. Reverted to -0.5 (engaging)
-            # and moved the falls problem to the MOVING dummy (opp_mode=
-            # "patrol"), which patrols AWAY from the edge and relieves the
-            # tension. (TRAINING_LOG 2026-06-13.)
-            reward -= 0.5; terminated = True
+            # (2026-06-13). The flat -1.0 BACKFIRED on a near-edge STATIONARY
+            # dummy: it collapsed into "don't approach the dummy at all" (falls
+            # and the kill objective are geometrically entangled there).
+            # Self-play (2026-06-13) decouples them: the opponent can actually
+            # KILL us, so a death is now either UNFORCED (we fell into the void —
+            # purely our own bad navigation, penalize hard: -1.0) or EARNED (the
+            # opponent shot us — a normal combat loss, lighter: -0.5). This
+            # split is only meaningful because a selfplay opp can deal lethal
+            # damage; against hold/patrol nearly all deaths are falls so it
+            # mostly reads -1.0, which is fine (don't fall).
+            reward -= 1.0 if my_y < -3.0 else 0.5
+            terminated = True
         elif cur_round != self._round:
             terminated = True  # round advanced (stall/other) — episode boundary
 
@@ -490,8 +657,8 @@ class SFHeadlessEnv(gym.Env):
         # Telemetry (read by VecMonitor info_keywords at episode end):
         #   win  = killed the opponent and survived
         #   fell = our death was a fall (y well below ground level) — vs being
-        #          killed, which matters from stage 1 onward.
-        my_y = float(me.get("y", 0.0)) if me else 0.0
+        #          killed, which matters from stage 1 onward. (my_y computed
+        #          above, before the death branches.)
         info = {"round": cur_round,
                 "win": 1.0 if (opp_dead and not self_dead) else 0.0,
                 "fell": 1.0 if (self_dead and my_y < -3.0) else 0.0,
