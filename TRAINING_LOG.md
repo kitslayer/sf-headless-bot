@@ -644,3 +644,46 @@ opp KILL the agent, so combat-deaths finally appear → THEN split the death
 penalty into fall(-1.0) vs combat-death(-0.5). (A "weakened scripted" opp would
 need new C# in DriveScriptedBots; moving+shooting is the cheaper rung.) Then →
 self-play pool. Falls SOLVED is a real unblock toward the real fighting task.
+
+## 2026-06-13 15:30 — SELF-PLAY built + verified, DEPLOYED, then REVERTED (host round-reset bug)
+
+Jumped straight to self-play (stage 2) instead of building a moving+shooting
+dummy — self-play is the real path AND auto-balanced (frozen copy of the bot =
+its exact equal → ~50% → dense gradient from any skill). Built via worktree
+subagent: `opp_mode="selfplay"` drives the opp slot with a FROZEN PPO snapshot
+(obs refactor `_build_obs_for(me,opp)` keeping the learner obs BYTE-IDENTICAL —
+unit-tested vs 285de2d; opp obs normalized with the frozen model's own
+VecNormalize stats; opp aims at the learner). Reward split fall(-1.0)/
+combat-death(-0.5). Offline tests PASS. LIVE sign-test (drove the selfplay env
+on instance 8): opp_aim·(opp→learner)=+1.00, learner hp 100→-28 — the frozen
+opp aims at + KILLS the learner. Sign correct, end-to-end verified.
+
+DEPLOYED to the fleet (frozen opp pinned via run/SELFPLAY_CKPT=1104k, learner
+resumes 1104k → symmetric). **It destabilized the fleet.** With BOTH bots
+fighting+dying (hold/patrol NEVER had the opp die — even when the learner
+killed the patrol dummy it was a single death, never MUTUAL), the instances
+went into a wedged state: rounds advance WITHOUT players respawning (snapshots
+show round counter climbing but ents=0 for 9s+), HP overkilled to ~-1900, ts
+stalled then regressed (1108k→1106k = crash-resume), ep_len collapsed 153→56,
+only 1/4 instances kept players. Critically these wedged instances stay
+bridge-RESPONSIVE, so the watchdog (which only checks bridge ping) never
+restarts them — they just spin empty.
+
+REVERTED: opp_mode-aware death penalty (hold/patrol = known-good -0.5; the
+split only for selfplay/scripted), supervisor → patrol, FULL fleet restart
+(fleet.sh stop + fresh start) to clear the wedge. Confirmed recovered: fresh
+instances spawn players, patrol trainer resumed the clean 1104k (self-play
+saved NO checkpoint — never reached the 1112k save — so nothing corrupted).
+
+ROOT-CAUSE HYPOTHESIS (needs host investigation): the headless round-reset/
+respawn doesn't handle BOTH bots dying (mutual kill / both fall) and/or the
+rapid round cycling of fast HP-25 duels — the respawn (CreatePlayer/Revive)
+doesn't fire, leaving empty rounds. Self-play CODE stays in tree, SHELVED.
+NEXT: investigate SFHeadlessHost round-end/respawn for the both-die case (does
+opp_mode="scripted", also a both-can-die fighting opp, hit the same wedge? —
+that localizes it to the host vs the selfplay env code). Fix the host respawn,
+THEN re-deploy self-play. A fighting opponent is the critical path to beating
+#1; the round-reset is the blocker. Ops gotcha (hit twice today): a bash
+command whose OWN cmdline contains an unbracketed process pattern
+(train_supervisor.sh / watchdog.sh / train_headless_ppo.py) self-matches its
+own pgrep/pkill and kills itself — use bracketed `[t]` patterns AND exclude $$.
