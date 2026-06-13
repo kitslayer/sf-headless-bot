@@ -489,3 +489,30 @@ Gate (deterministic win>=0.8 & fell<=0.1): FELL PASSES (0.05); WIN 0.45 ->
 0.8 needed. So keep training at HP-25, let greedy win climb, re-eval
 ~1.0M+. Do NOT advance HP yet. NOTE for future evals: add the 5th instance
 to the watchdog or accept ~20-ep samples (it hung at 20/40 here).
+
+## 2026-06-13 07:45 — 2nd deterministic eval: win PLATEAUED ~0.50 at HP-25
+
+eval #2 (944k ckpt, 20 eps before the unwatched 5th instance hung again):
+**win 0.55, fell 0.30**. Combined with eval #1 (888k): win 0.45 -> 0.55
+(deterministic win is ~0.50 and roughly flat across 888k->944k, NOT
+climbing toward the 0.8 gate). Falls noisy across the two 20-ep samples
+(0.05 vs 0.30) — and notably the GREEDY policy falls more than the
+stochastic one (training fell ~0.09): argmax marches more decisively
+toward targets and occasionally off the edge (mild residual of the
+BC-clone failure; slot-swap reduced but didn't eliminate it).
+
+INTERPRETATION: "kill a stationary HP-25 dummy in 30s" looks RNG-capped
+near ~0.5 win (when no weapon is reachable + melee positioning fails, the
+episode times out as a non-win). The 0.8 stage-0 gate is likely
+unreachable on a stationary dummy regardless of more training — this is a
+degenerate task. The policy IS competent (fetches gun, fires, ~0.5 kills,
+mostly avoids edges).
+
+DECISION POINT (for Miles): stage 0 (dummy) has plateaued. Real options:
+(1) graduate to stage 1 — a MOVING/scripted opponent (the actual task) and
+treat ~0.5-on-dummy as "stage 0 passed" since 0.8 is RNG-capped; (2) push
+the residual greedy falls down first (small fall-penalty bump or stronger
+void shaping — reversible); (3) keep grinding HP-25 (diminishing returns).
+Leaning (2) then (1). NOT forcing a stage change unilaterally — training
+continues at HP-25, watched, pending Miles. Also: add the 5th eval
+instance to the watchdog so evals don't cap at ~20 eps.
