@@ -766,3 +766,29 @@ deterministic eval vs frozen (track greedy win climbing 0.35→...); LEAGUE-REFR
 ~>0.65 (learner reliably beats the snapshot). Falls (greedy 0.20) acceptable for
 now; if they don't drop as it learns edge-aware dodging, add edge-proximity
 shaping. Box: 2 instances, load ~15, healthy.
+
+## 2026-06-13 22:23 — SELF-PLAY EVAL #2 (1240k, ~133k steps): falls SOLVED, win FLAT 0.35
+
+Eval #2 vs frozen 1104k (20 eps): win 0.35 / **fell 0.05** / arms 0.35 / hits
+0.50 / len 119. vs eval #1 (1168k): win 0.35 / fell 0.20 / arms 0.70 / len 170.
+- **Falls SOLVED** (0.20→0.05): the learner developed edge-aware dodging through
+  training — the -1.0 fall penalty worked WITHOUT timidity (because on a moving/
+  fighting opp it can dodge inward, unlike the stationary-near-edge dummy). Good.
+- **Win FLAT 0.35** (not climbing) + **arms halved** (0.70→0.35) + shorter eps:
+  the learner traded "arm more, sometimes fall" for "arm less, never fall" — net
+  win unchanged, and notably <0.5 vs a near-snapshot of itself (started ~symmetric
+  by construction, now ~0.35). So self-play is HEALTHY (real sub-skill gained, PPO
+  stable, ep_rew positive) but NOT yet producing a win gain vs the frozen opp —
+  possibly a cautious low-arming equilibrium, or just needs many more steps (130k
+  is little for self-play). The lower arming may be the shooting-opp making
+  weapon-fetches risky (exposes the learner to fire) — the +0.15 arm bonus is
+  outweighed by fall/combat risk.
+DECISION: continue self-play; re-eval at ts ~1.33M (~3.5h, +90k steps). If win
+is STILL ~0.35 (no climb), add LEAGUE DIVERSITY — a pool of past frozen snapshots
+sampled as opponents (PFSP) instead of one fixed opp — the standard fix for
+single-opponent self-play stagnation (the league-pool task #26 machinery from an
+earlier engine is the reference; needs porting to the headless selfplay env: load
+N frozen ckpts, sample one per episode). Also reconsider the arm incentive then.
+NOT intervening yet (2 noisy 20-ep evals at ~0.35 ≠ conclusive stagnation; falls-
+solved shows the learner CAN improve sub-skills). gate = deterministic eval +
+ep_rew_mean, NOT rollout win_mean (entropy-depressed in self-play).
