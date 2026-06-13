@@ -447,3 +447,16 @@ needs spawn randomization OR a flat/edgeless map for the movement+combat
 skill (your "learn movement first" intuition). If pure-PPO-from-800k +
 HP-25 re-plateaus at ~0.08, the next move is that pivot — flagging rather
 than doing it unprompted since it's a bigger redo + needs fresh demos.
+
+## 2026-06-13 02:45 — spatial diversity via slot-swap (Miles' idea)
+
+Added `randomize_slot` to SFHeadlessEnv: each episode the policy drives a
+random slot (0 or 1); they spawn at different ~mirrored points, so the
+agent sees both start positions / facing directions instead of always
+marching the same way off the same edge (the fixed-spawn collapse that
+broke BC and caps PPO). Obs is ego-relative so one policy keyed on dz/dy
+produces opposite global movement — the state-conditioned navigation we
+want. Pure stock spawns, NO teleport (honors the 1:1 rule). Enabled in the
+trainer (make_env randomize_slot=True); eval stays fixed-slot for
+comparable gates. Live on the pure-PPO-from-800k + HP-25 run. First
+post-revert tick already showed fell 0.23->0.15.

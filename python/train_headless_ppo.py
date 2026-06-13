@@ -201,7 +201,8 @@ class EpInfoLogger(BaseCallback):
 def make_env(bridge_port: int, opp_mode: str = "hold", poll_hz: float = 20.0):
     def _thunk():
         return SFHeadlessEnv(bridge_port=bridge_port, my_slot=0, opp_slot=1,
-                             poll_hz=poll_hz, max_steps=600, opp_mode=opp_mode)
+                             poll_hz=poll_hz, max_steps=600, opp_mode=opp_mode,
+                             randomize_slot=True)   # 2026-06-13: spatial diversity
     return _thunk
 
 

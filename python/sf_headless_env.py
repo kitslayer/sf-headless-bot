@@ -95,11 +95,22 @@ class SFHeadlessEnv(gym.Env):
 
     def __init__(self, bridge_port: int = 1341, my_slot: int = 0, opp_slot: int = 1,
                  poll_hz: float = 20.0, max_steps: int = 600,
-                 reset_timeout: float = 30.0, opp_mode: str = "hold"):
+                 reset_timeout: float = 30.0, opp_mode: str = "hold",
+                 randomize_slot: bool = False):
         super().__init__()
         self.addr = ("127.0.0.1", bridge_port)
         self.my_slot = my_slot
         self.opp_slot = opp_slot
+        # Slot swap (2026-06-13, Miles): on a fixed-spawn map the learner always
+        # starting at slot 0's spawn collapses movement to a near-constant
+        # action (always march the same way → off the same edge — this is what
+        # broke BC and caps PPO). Slots 0 and 1 spawn at different, ~mirrored
+        # points, so randomizing which slot the policy drives each episode makes
+        # it experience both start positions / facing directions. The obs is
+        # ego-relative (dz/dy to opp, rays from self) so the SAME policy keyed on
+        # relative state produces the opposite global movement — exactly the
+        # state-conditioned navigation we want. Pure stock spawns, no teleport.
+        self.randomize_slot = randomize_slot
         # opp_mode: "hold"  -> env pins the opponent slot stationary (curriculum
         #                      stage 0: learn to approach + attack a dummy).
         #           "scripted" -> leave the opponent to the in-plugin scripted
@@ -306,6 +317,13 @@ class SFHeadlessEnv(gym.Env):
     # ---- gym API ----
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)
+        # Slot swap: pick which rig the policy drives THIS episode (the other is
+        # the held dummy). Slots 0/1 spawn at different points → spatial +
+        # facing diversity. Done at the top of reset so all of reset's own
+        # hold/obs use the chosen slots.
+        if self.randomize_slot:
+            self.my_slot = int(self.np_random.integers(0, 2))
+            self.opp_slot = 1 - self.my_slot
         # The host auto-cycles rounds on death/stall. We sync the episode to a
         # round boundary: note the current round, then wait until the round
         # NUMBER advances and both bots are present & alive (a freshly-spawned
