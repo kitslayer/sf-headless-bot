@@ -687,3 +687,39 @@ THEN re-deploy self-play. A fighting opponent is the critical path to beating
 command whose OWN cmdline contains an unbracketed process pattern
 (train_supervisor.sh / watchdog.sh / train_headless_ppo.py) self-matches its
 own pgrep/pkill and kills itself — use bracketed `[t]` patterns AND exclude $$.
+
+## 2026-06-13 16:03 — HOST ROUND-RESET FIXED → SELF-PLAY LIVE (fighting opponent)
+
+Subagent root-caused the both-die wedge: the headless host's `AdvanceRound` is
+re-entrant — it fires on EACH death with no survivor gate (stock SF only ends a
+round at ≤1 survivor), so death #2 in a duel restarts the ~12.5s respawn chain
+from zero → round counter climbs, players never respawn, corpses overkill to
+-1900 (`TestProjectileHit` didn't skip dead rigs). Localization: it's the HOST,
+not the selfplay env (the selfplay commit was Python-only; it just created the
+both-die CONDITION for the first time — `opp_mode="scripted"` was NEVER actually
+run on this host since the fleet uses SFGYM_RL_SLOTS=0,1).
+
+FIX (SFHeadlessHost.cs, 4 coordinated changes, built 0-warn/0-err): (a)
+`_roundAdvanceInFlight` latch makes AdvanceRound non-re-entrant (TrySchedule
+early-returns while held; cleared when AutoSpawnBots completes) — the core fix;
+(b) survivor-count gate in TickAuthRigDeathCheck (advance only ≤1 alive),
+single-death path unchanged; (c) TestProjectileHit skips dead rigs (no more
+-1900); (d) play-gate cleared only when RoundMinPlaySec≤0. Deployed with the
+working DLL backed up (SFHeadlessHost.dll.bak-working-*).
+
+**LIVE-VALIDATED:** re-deployed self-play on the fix DLL — fleet now SUSTAINS
+rounds (4/4 bridges keep players, normal round cadence r3→r4 with ents cycling
+2↔0 on clean transitions) vs the prior empty-round wedge. Trainer resumes 1104k
+vs frozen 1104k opp (symmetric ~50%), opp_mode=selfplay, reward split active
+(fall -1.0 / combat-death -0.5). Memory: si/so=0 (no thrash) but free tighter
+(~1.7GB; 4 frozen-opp models) — WATCH; drop to 3 instances if it thrashes.
+
+Pushed f13a79f. SELF-PLAY IS THE REAL FIGHTING OPPONENT — first time the bot
+trains against something that shoots back. NEXT: babysit (rounds-sustain +
+memory + ts), periodic deterministic eval vs selfplay, then league-refresh v2
+(update run/SELFPLAY_CKPT to a newer snapshot + restart once the learner
+reliably beats the frozen opp) so it climbs past one snapshot toward superhuman.
+Also flagged today (teammate): box "OOM-restarting" — investigated, NOT OOM (no
+kills, si/so≈0, sparse trainer restarts); it's Proton instance flapping
+(tolerable, self-recovers) + moderate mem pressure (relieved). dmesg is
+restricted (dmesg_restrict=1) so kernel-OOM unconfirmable directly.
