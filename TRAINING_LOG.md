@@ -460,3 +460,16 @@ want. Pure stock spawns, NO teleport (honors the 1:1 rule). Enabled in the
 trainer (make_env randomize_slot=True); eval stays fixed-slot for
 comparable gates. Live on the pure-PPO-from-800k + HP-25 run. First
 post-revert tick already showed fell 0.23->0.15.
+
+## 2026-06-13 05:00 — PLATEAU BROKEN: win 0.13-0.18 (slot-swap + HP-25)
+
+First real breakout in the project. After reverting BC and running pure
+PPO from the pre-BC 800k tip with HP-25 + corrected gravity + slot-swap
+diversity, win climbed off the long ~0.08 plateau: rollout win_mean
+0.10->0.11->0.13->0.18->0.15 over ~870-872k, with fell holding 0.07-0.10
+(at/below the 0.1 gate) and arms/hits up (0.36-0.38 / 0.29-0.36). The
+slot-swap (policy drives a random spawn each episode) was the unlock — it
+forced state-conditioned navigation the fixed-spawn setup never allowed.
+Plan: deterministic eval at ~900k for the true number; if it confirms
+~0.15+ win / <0.1 fell sustained, this is the first stage-gate-credible
+policy — then consider HP-50 step.
