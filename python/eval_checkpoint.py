@@ -1,81 +1,119 @@
-"""Evaluate a trained PPO checkpoint against the headless env (deterministic).
+"""Deterministic (and stochastic) evaluation of a trained checkpoint.
 
-Reports win rate (agent kills opponent), loss/fall rate, and mean reward over N
-episodes — use it to pick the best checkpoint (training ep_rew is noisy and the
-"latest" checkpoint isn't necessarily the best).
+The trainer's rollout win_mean is measured on the STOCHASTIC exploration
+policy and swings ±0.06 from instance churn — useless for a real verdict
+or a curriculum gate. This runs a checkpoint on a DEDICATED game instance
+(its own bridge, NOT the training fleet's) for N full episodes and reports
+the true win/fell/length/arms/hits, with --deterministic selecting argmax
+vs sampled actions. The whole BC-transfer question (is the policy good but
+sample-noisy, or genuinely stuck?) is answered by running this once with
+and once without --deterministic.
 
-IMPORTANT: point this at a DEDICATED instance bridge, NOT one the trainer is
-using — deterministic eval actions would corrupt that env's training data. e.g.
-stop training (or spin up an extra instance on another port) first.
+Win/fell come from info[] (the env's own definition), NOT the reward sign —
+under the dense kill-biased shaping a non-win episode easily clears any
+reward threshold, so the old reward-sign classifier over-counts wins.
 
-Usage:
-    python eval_checkpoint.py models/ppo_headless_120000_steps.zip --bridge 1341 --episodes 20
-    # optional: --vecnormalize models/ppo_headless_vecnormalize_120000_steps.pkl
+Usage (point at an idle bridge, e.g. a 5th instance on 1349):
+    python eval_checkpoint.py --bridge 1349 --episodes 40 --deterministic
+    python eval_checkpoint.py --bridge 1349 --episodes 40            # stochastic
+    python eval_checkpoint.py models/BC_INIT_816000.zip --bridge 1349 --deterministic
 """
 from __future__ import annotations
 
 import argparse
+import glob
 import os
+import re
+import sys
 
 import numpy as np
-from sf_headless_env import SFHeadlessEnv
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+MODELS = os.path.join(HERE, "..", "models")
+
+from sf_headless_env import SFHeadlessEnv
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 
+def latest_checkpoint():
+    best_n, best = -1, None
+    for z in glob.glob(os.path.join(MODELS, "ppo_headless_*_steps.zip")):
+        m = re.search(r"ppo_headless_(\d+)_steps\.zip$", z)
+        if m and int(m.group(1)) > best_n:
+            best_n, best = int(m.group(1)), z
+    return best
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("checkpoint")
-    ap.add_argument("--bridge", type=int, default=1341)
-    ap.add_argument("--episodes", type=int, default=20)
-    ap.add_argument("--opp-mode", choices=["hold", "scripted"], default="hold")
-    ap.add_argument("--vecnormalize", default=None,
-                    help="VecNormalize .pkl saved alongside the checkpoint (recommended)")
-    ap.add_argument("--stochastic", action="store_true", help="sample actions instead of argmax")
+    ap.add_argument("checkpoint", nargs="?", default="",
+                    help="checkpoint zip (default: latest ppo_headless_*_steps.zip)")
+    ap.add_argument("--bridge", type=int, default=1349)
+    ap.add_argument("--episodes", type=int, default=40)
+    ap.add_argument("--vecnormalize", default="",
+                    help="VecNormalize .pkl (default: matched by step number)")
+    ap.add_argument("--deterministic", action="store_true", help="argmax actions (default: sampled)")
+    ap.add_argument("--max-steps", type=int, default=600)
     args = ap.parse_args()
 
-    def mk():
+    ckpt = args.checkpoint or latest_checkpoint()
+    assert ckpt and os.path.exists(ckpt), f"no checkpoint ({ckpt})"
+    vn = args.vecnormalize
+    if not vn:
+        m = re.search(r"_(\d+)_steps\.zip$", ckpt)
+        if m:
+            vn = os.path.join(MODELS, f"ppo_headless_vecnormalize_{m.group(1)}_steps.pkl")
+    mode = "DETERMINISTIC" if args.deterministic else "stochastic"
+    print(f"[eval] {mode} | ckpt={os.path.basename(ckpt)} | bridge={args.bridge} | "
+          f"eps={args.episodes}", flush=True)
+
+    def _thunk():
         return SFHeadlessEnv(bridge_port=args.bridge, my_slot=0, opp_slot=1,
-                             poll_hz=20.0, max_steps=600, opp_mode=args.opp_mode)
-
-    venv = DummyVecEnv([mk])
-    # Match training obs normalization if provided (eval must use the same stats).
-    if args.vecnormalize and os.path.exists(args.vecnormalize):
-        venv = VecNormalize.load(args.vecnormalize, venv)
-        venv.training = False
+                             poll_hz=20.0, max_steps=args.max_steps, opp_mode="hold")
+    venv = DummyVecEnv([_thunk])
+    if vn and os.path.exists(vn):
+        venv = VecNormalize.load(vn, venv)
+        venv.training = False          # freeze stats, don't update during eval
         venv.norm_reward = False
-        print(f"[eval] loaded VecNormalize {args.vecnormalize}")
+        print(f"[eval] loaded vecnormalize {os.path.basename(vn)}", flush=True)
+    else:
+        print(f"[eval] WARNING: no vecnormalize stats ({vn}) — obs unnormalized!", flush=True)
 
-    model = PPO.load(args.checkpoint, device="cpu")
-    print(f"[eval] {args.checkpoint} | {args.episodes} eps | opp={args.opp_mode} "
-          f"| {'stochastic' if args.stochastic else 'deterministic'}")
+    model = PPO.load(ckpt, device="cpu")
 
-    wins = losses = timeouts = 0
-    returns = []
-    for ep in range(args.episodes):
-        obs = venv.reset()
-        done = np.array([False])
-        ret = 0.0
-        info = {}
-        while not done[0]:
-            action, _ = model.predict(obs, deterministic=not args.stochastic)
-            obs, r, done, infos = venv.step(action)
-            ret += float(r[0]); info = infos[0]
-        returns.append(ret)
-        # Classify by terminal reward sign (env: +1 kill, -1 self-death).
-        if ret > 0.5:
-            wins += 1; tag = "WIN"
-        elif ret < -0.5:
-            losses += 1; tag = "loss/fall"
-        else:
-            timeouts += 1; tag = "draw/timeout"
-        print(f"  ep {ep:2d}: return={ret:+.2f} [{tag}]")
-
-    n = max(1, args.episodes)
-    print(f"\n[eval] win={wins}/{n} ({100*wins/n:.0f}%)  loss/fall={losses}/{n}  "
-          f"draw={timeouts}/{n}  mean_return={np.mean(returns):+.3f}")
+    wins = fell = 0
+    lengths, arms, hits = [], [], []
+    obs = venv.reset()
+    ep_len = 0
+    done_count = 0
+    while done_count < args.episodes:
+        action, _ = model.predict(obs, deterministic=args.deterministic)
+        obs, _, dones, infos = venv.step(action)
+        ep_len += 1
+        if dones[0]:
+            info = infos[0]
+            wins += int(float(info.get("win", 0.0)) >= 0.5)
+            fell += int(float(info.get("fell", 0.0)) >= 0.5)
+            arms.append(float(info.get("arms", 0.0)))
+            hits.append(float(info.get("hits", 0.0)))
+            lengths.append(ep_len)
+            ep_len = 0
+            done_count += 1
+            if done_count % 10 == 0:
+                print(f"[eval] {done_count}/{args.episodes} "
+                      f"win={wins/done_count:.3f} fell={fell/done_count:.3f}", flush=True)
     venv.close()
+    n = args.episodes
+    print(f"\n===== EVAL RESULT ({mode}) =====")
+    print(f"checkpoint : {os.path.basename(ckpt)}")
+    print(f"episodes   : {n}")
+    print(f"WIN rate   : {wins/n:.3f}  ({wins}/{n})")
+    print(f"fell rate  : {fell/n:.3f}  ({fell}/{n})")
+    print(f"ep length  : {np.mean(lengths):.0f} steps mean / {np.median(lengths):.0f} median")
+    print(f"arms/ep    : {np.mean(arms):.2f}")
+    print(f"hits/ep    : {np.mean(hits):.2f}")
 
 
 if __name__ == "__main__":

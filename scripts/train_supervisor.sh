@@ -44,16 +44,17 @@ while true; do
     echo "[train-sup $(date '+%H:%M:%S')] trainer not running — launching (resumes from checkpoint)"
     ( source "$VENV/bin/activate"
       cd "$BOTDIR/python"
-      # Kickstart (2026-06-12): decaying BC anchor on the scripted-teacher
-      # demos. --ks-anchor is FIXED at the BC-2 resume point so supervisor
-      # relaunches don't restart the decay clock; once num_timesteps passes
-      # anchor+decay the anchor weight is 0 and this is plain PPO again.
+      # Kickstart (decaying BC anchor) is DISABLED by default as of 2026-06-13:
+      # a deterministic eval at 920k showed the BC clone marches off the void
+      # edge (fell=0.83) because the fixed-spawn teacher demos were ~85% one
+      # move-direction — argmax replays that off the cliff, and the anchor
+      # PINNED the policy there (win regressed 0.08->0.05, fell 0.13->0.23 vs
+      # pre-BC PPO). Reverted to the pre-BC 800k checkpoint, plain PPO + HP-25.
+      # The kickstart machinery is intact: drop a `run/USE_KICKSTART` file and
+      # set the anchors to the new resume point to re-enable (only sensible
+      # once demos come from a diverse-spawn or flat map — see TRAINING_LOG).
       KS_ARGS=""
-      if [ -f "$BOTDIR/demos/teacher_demos.npz" ]; then
-        # Phase A (critic warmup): policy frozen 808k->858k while the value
-        # head recalibrates to the BC clone. Phase B: LR warmup + BC anchor
-        # decaying 0.5 -> 0 over 858k->1258k. Anchors are ABSOLUTE
-        # num_timesteps so crash relaunches don't restart the schedule.
+      if [ -f "$BOTDIR/run/USE_KICKSTART" ] && [ -f "$BOTDIR/demos/teacher_demos.npz" ]; then
         KS_ARGS="--kickstart-demos $BOTDIR/demos/teacher_demos.npz --ks-coef 0.5 --ks-anchor 858000 --ks-decay 400000 --ks-warmup-until 858000"
       fi
       nohup python train_headless_ppo.py --instances "$INSTANCES" --base-bridge 1341 \

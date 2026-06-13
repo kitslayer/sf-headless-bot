@@ -411,3 +411,39 @@ unfrozen, fresh Adam, LR warmup over 50k, λ=0.496 decaying. bc_loss=0.285
 ≈ the clone's final pretrain loss → phase A preserved the teacher
 behavior while the critic recalibrated. Now watching win/fell as RL
 starts moving the policy at HP-25.
+
+## 2026-06-13 02:40 — deterministic eval kills the BC/kickstart approach; reverted to pre-BC + HP-25
+
+Built eval_checkpoint.py (rewritten — old one classified wins by reward
+SIGN, which the dense shaping breaks) and ran a DETERMINISTIC 40-ep eval
+on a dedicated 5th instance (bridge 1349, no fleet collision) against the
+920k kickstart checkpoint:
+  **deterministic win=0.067, fell=0.83** (stochastic was win~0.05 fell~0.23)
+The argmax policy MARCHES OFF THE VOID EDGE in 83% of episodes — the
+stochastic noise was the only thing holding fell at ~0.2.
+
+Root cause: the teacher demos were ~85% one move-direction (fixed map +
+fixed spawns → the teacher's movement is near-constant), so BC cloned a
+near-constant "walk toward target" policy that argmaxes off the cliff, and
+the kickstart anchor (target = those demos) PINNED the policy there. Net:
+BC/kickstart REGRESSED vs pre-BC pure PPO (win 0.08->0.05, fell 0.13->0.23)
+and phase-B win was DECLINING (0.11->0.03 over 76k steps) — the anchor was
+winning the tug-of-war toward a worse policy, and wouldn't free RL until
+~1.2M (10+h away).
+
+ACTION (reverted, all archived not deleted):
+- archived 34 files >800k (BC clones + kickstart ckpts) to models/archive-kickstart/
+- kickstart DISABLED in train_supervisor.sh (gated behind run/USE_KICKSTART;
+  machinery intact in train_headless_ppo.py)
+- resumed PLAIN PPO from ppo_headless_800000 (last pre-BC tip), now with the
+  three clean new levers it never had: HP-25 (dense kills), corrected
+  gravity -20 in the void predictor (was 9.81 -> agent thought it had 2x
+  longer before void impact), n_epochs 10 + target_kl 0.02 (sample reuse).
+- VecNormalize unfrozen (trains normally; no anchor to protect).
+
+OPEN STRATEGIC QUESTION for Miles: BC from a scripted teacher COLLAPSES on a
+fixed-spawn map (movement becomes a constant). To make imitation work it
+needs spawn randomization OR a flat/edgeless map for the movement+combat
+skill (your "learn movement first" intuition). If pure-PPO-from-800k +
+HP-25 re-plateaus at ~0.08, the next move is that pivot — flagging rather
+than doing it unprompted since it's a bigger redo + needs fresh demos.
