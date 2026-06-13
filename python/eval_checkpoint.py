@@ -56,7 +56,7 @@ def main():
                     help="VecNormalize .pkl (default: matched by step number)")
     ap.add_argument("--deterministic", action="store_true", help="argmax actions (default: sampled)")
     ap.add_argument("--max-steps", type=int, default=600)
-    ap.add_argument("--opp-mode", default="hold", choices=["hold", "patrol", "scripted"],
+    ap.add_argument("--opp-mode", default="hold", choices=["hold", "patrol", "scripted", "selfplay"],
                     help="opponent the eval faces; use 'patrol' for a stage-1-faithful "
                          "number (must match how the checkpoint was trained)")
     args = ap.parse_args()
