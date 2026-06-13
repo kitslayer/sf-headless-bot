@@ -741,3 +741,28 @@ bridge/DEGRADED checks match the fleet size. FUTURE: to scale instances back up,
 cheapen the opp (predict every ~3 steps, reuse action + fresh aim — realistic
 ~6.7Hz reaction, ~3x less CPU); deferred (2 instances is fine for now). The
 README "Run" still shows `fleet.sh start 4` — for SELF-PLAY use 2.
+
+## 2026-06-13 19:08 — FIRST SELF-PLAY EVAL: healthy (greedy win 0.35 vs frozen, training stable)
+
+The rollout win_mean looked alarming in self-play (declined 0.15→0.02, fell
+rose to 0.41) — but that's MISLEADING. A deterministic eval (1168k learner vs
+frozen 1104k opp, 20 eps): **win 0.35 / fell 0.20 / arms 0.70 / hits 0.50.** The
+GREEDY learner is a competent fighter (~35% vs the frozen snapshot, arms+hits
+fine) — slightly behind the fixed frozen policy, exactly as expected this early
+(learner is being perturbed by training; it'll climb and eventually beat the
+frozen opp → league-refresh). PPO metrics confirm HEALTHY training: approx_kl
+0.002-0.008 (<<0.02 target), entropy_loss STABLE ~-1.8 (moderate exploration,
+not collapsing/exploding), explained_variance 0.4-0.69 (critic learning),
+ep_rew_mean POSITIVE ~1.2-2.0. The huge greedy(0.35)-vs-stochastic(0.02) gap is
+just the stable ~1.8 entropy — the SAMPLED policy spreads actions so it flails
+(low stochastic win, high stochastic fell), while argmax is competent.
+
+LESSON: **in self-play the rollout win_mean is a poor metric (entropy-depressed)
+— gate on DETERMINISTIC eval + ep_rew_mean, NOT stochastic win.** The sf_watch
+"win/fell/selfdestruct" fields read low/scary under self-play; that's expected,
+not a fault. NO intervention — self-play is learning fine. NEXT: periodic
+deterministic eval vs frozen (track greedy win climbing 0.35→...); LEAGUE-REFRESH
+(overwrite run/SELFPLAY_CKPT + restart) when greedy win vs frozen sustains
+~>0.65 (learner reliably beats the snapshot). Falls (greedy 0.20) acceptable for
+now; if they don't drop as it learns edge-aware dodging, add edge-proximity
+shaping. Box: 2 instances, load ~15, healthy.
