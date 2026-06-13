@@ -723,3 +723,21 @@ Also flagged today (teammate): box "OOM-restarting" — investigated, NOT OOM (n
 kills, si/so≈0, sparse trainer restarts); it's Proton instance flapping
 (tolerable, self-recovers) + moderate mem pressure (relieved). dmesg is
 restricted (dmesg_restrict=1) so kernel-OOM unconfirmable directly.
+
+## 2026-06-13 17:24 — SELF-PLAY CPU TUNING: 2 instances is the sweet spot
+
+Self-play's frozen-opp inference is CPU-heavy (~3 cores per worker: torch
+PPO.predict every step IN the SubprocVecEnv worker). At 4 instances load hit 28
+(over 24 cores); at 3 it crept to 24+ (1-min 32-37) AND triggered a vicious
+cycle (CPU starvation → instances flap → watchdog restarts → DXVK shader
+recompiles spike CPU → more flap). Dropped to **2 instances**: load settled to
+~12-16, RAM 8GB free, **fps DOUBLED 5→10** (at 3-4 the box was so contended
+every env crawled — fewer envs = higher AGGREGATE throughput), and wd_restarts
+went FLAT (flapping stopped). So on this 24-core box (shared w/ idle Docker
+media), **self-play = 2 instances** is both healthier and faster than 3-4.
+Memory was never the issue (si/so=0 throughout); it was pure CPU oversubscription
+from the opp inference. sf_watch.sh got an SF_N knob (instance count) so the
+bridge/DEGRADED checks match the fleet size. FUTURE: to scale instances back up,
+cheapen the opp (predict every ~3 steps, reuse action + fresh aim — realistic
+~6.7Hz reaction, ~3x less CPU); deferred (2 instances is fine for now). The
+README "Run" still shows `fleet.sh start 4` — for SELF-PLAY use 2.
