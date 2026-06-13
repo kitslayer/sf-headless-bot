@@ -616,3 +616,31 @@ stationary dummy so expect a dip-then-climb) and fell. Self-destruct guard:
 if rollout win_mean spikes >0.55 (implausible for a moving target), suspect
 the dummy is suiciding → check the veto. eval_checkpoint.py still uses
 opp_mode="hold"; for a patrol-faithful eval, point it at patrol later.
+
+## 2026-06-13 12:09 — STAGE 1 VALIDATED: moving dummy SOLVES falls while keeping engagement
+
+First patrol-faithful deterministic eval (1032k, ~40k patrol steps,
+`run_eval.sh 40 "" patrol`, 20 eps before the 5th instance wedged):
+  win 0.35 | **fell 0.000** | arms 0.60 | hits 0.45 | len 153
+  (per-5-ep: win 0.40/0.50/0.467/0.35, fell 0.00 EVERY checkpoint)
+vs stationary baseline (984k): win 0.45 | fell 0.22 | arms 0.95.
+
+THE HEADLINE: **fell 0.22 → 0.00.** The moving dummy completely eliminated the
+self-destruct-off-the-edge problem — and did it while KEEPING engagement (win
+0.35 competent, NOT the timid 0.04 the -1.0 penalty produced). This is the
+payoff of the whole chain: falls weren't fixable by a death penalty on the
+stationary-near-edge dummy (penalty → timidity), but they ARE fixed by a
+curriculum/environment change — a target that patrols away from the edge, so
+the agent engages in safe central positions. 1:1 with the game (dummy moves via
+stock setBotAction; no teleport/clamp). win 0.35 < stationary 0.45 because a
+moving target is harder to corner (arms 0.60 vs 0.95) — expected, and win
+should climb with more patrol training (was 0.50 at 10 eps; ~0.4±0.15 on 20).
+
+NEXT: keep training patrol (track deterministic win climbing); auto re-eval at
+ts 1.085M. When patrol win plateaus/climbs to ~0.55+, advance to STAGE 2 — the
+natural env-only step is a MOVING+SHOOTING dummy (extend patrol to aim at the
+learner + pulse fire): adds incoming fire (agent must dodge/block) and lets the
+opp KILL the agent, so combat-deaths finally appear → THEN split the death
+penalty into fall(-1.0) vs combat-death(-0.5). (A "weakened scripted" opp would
+need new C# in DriveScriptedBots; moving+shooting is the cheaper rung.) Then →
+self-play pool. Falls SOLVED is a real unblock toward the real fighting task.
