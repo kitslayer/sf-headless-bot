@@ -58,7 +58,7 @@ while true; do
         KS_ARGS="--kickstart-demos $BOTDIR/demos/teacher_demos.npz --ks-coef 0.5 --ks-anchor 858000 --ks-decay 400000 --ks-warmup-until 858000"
       fi
       nohup python train_headless_ppo.py --instances "$INSTANCES" --base-bridge 1341 \
-        --steps "$STEPS" --save-every 8000 $KS_ARGS >> "$BOTDIR/logs/train.log" 2>&1 ) &
+        --steps "$STEPS" --save-every 8000 --opp-mode patrol $KS_ARGS >> "$BOTDIR/logs/train.log" 2>&1 ) &
     anchor_ts=-1; anchor_time=$(date +%s)   # reset stall tracking for the fresh trainer
     sleep 10
   else

@@ -572,3 +572,47 @@ opp's own rays). Rolling win_mean stays the noisy stochastic score; gate on
 deterministic eval only. Infra note: the "two supervisors" flagged in review is
 benign — one supervisor (pid 1519342) + its trainer-holding `( )&` subshell
 (1527181), confirmed by parent-child ppid.
+
+## 2026-06-13 10:18 — FALLS-FIX BACKFIRED (timidity); reverted + advanced to MOVING DUMMY (stage 1)
+
+The -1.0 fall penalty was a clean, confirmed FAILURE. Post-fix deterministic
+eval at 1016k (24k steps post-doubling), 25 eps:
+  win 0.04 | fell 0.00 | arms 0.04 | hits 0.04 | len 92   (vs baseline
+  984k: win 0.45 | fell 0.22 | arms 0.95 | hits 1.05 | len 198)
+Falls went to ZERO — but the greedy policy went fully PASSIVE: it stopped
+approaching the dummy, stopped arming, stopped fighting. Tell: deterministic
+crashed while the STOCHASTIC rollout held ~baseline (win ~0.08, arms ~0.20),
+i.e. the penalty shifted the policy's *argmax* (mode) to the safe "don't
+approach" action. Root cause is GEOMETRIC: the stationary dummy spawns ~3u
+from the void edge, so "don't die" == "don't approach the dummy." On a
+stationary-near-edge target the fall penalty and the kill objective are in
+direct tension — falls are NOT fixable by a death penalty here. Important
+negative result; don't retry penalty-tuning on the stationary dummy.
+
+ACTIONS (all reversible; -0.5/hold + 992k base intact, timid ckpts archived):
+- Reverted death penalty -1.0 → -0.5 (restored the engaging policy).
+- Implemented the MOVING DUMMY as `opp_mode="patrol"` (env-only, NO host/C#
+  change): the env drives the opp slot with a back-and-forth walk (flip every
+  ~1.75s), NEVER firing/aiming. Void-SAFE by a two-band veto on the dummy's
+  OWN cached z (hard-correct inward past |z|>14, soft-veto outward past 12.5;
+  runtime SF_VOID_Z=17). Unit-tested every band; LIVE snapshots confirm the
+  patrolled slots stay |z|≤~14 with the veto actively pushing inward (never
+  near the 17 void edge), so the dummy can't self-destruct (which would hand
+  free wins). Sign verified vs the env's own obs comment (MoveX>0 → -z).
+- Plumbing: `--opp-mode patrol` added to the trainer choices + the supervisor
+  launch; `_last_opp_z` cached in `_build_obs`; patrol state in `__init__`.
+- Archived the timid 1000k/1008k/1016k checkpoints to models/archive-timid/
+  and RESUMED FROM 992k (the last engaging -0.5 policy) — NOT the timid tip,
+  so the agent keeps its weapon-fetch/aim skill while adapting to a target
+  that now MOVES. Killed+relaunched the supervisor (setsid) so it re-read the
+  edited launch line; verified opp_mode=patrol, resume@992k, 1 trainer.
+
+WHY the moving dummy should also fix falls (the original goal): a patrolling
+target stays AWAY from the edge (|z|<14), so the agent engages it in safer
+central positions — relieving the kill-vs-fall tension that broke both -0.5
+(falls 0.22) and -1.0 (timid) on the stationary-near-edge dummy. Watch the
+patrol-stage deterministic eval for BOTH win (target ≥0.4, harder than a
+stationary dummy so expect a dip-then-climb) and fell. Self-destruct guard:
+if rollout win_mean spikes >0.55 (implausible for a moving target), suspect
+the dummy is suiciding → check the veto. eval_checkpoint.py still uses
+opp_mode="hold"; for a patrol-faithful eval, point it at patrol later.

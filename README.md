@@ -60,12 +60,19 @@ the single source of truth the instances source), `scripts/watchdog.sh`
    then `KickstartPPO` resumes with a decaying BC anchor + critic warmup.
    Recollect demos whenever the opponent stage changes.
 
-**Status (2026-06-13):** stage 0 (HP-25 stationary dummy). Deterministic-eval
-baseline at 984k: win ~0.50 / fell 0.25 / arms 1.05 — the greedy policy arms
-itself fine but self-destructs off the void edge ~1-in-4 (the binding loss
-bucket, not weapon RNG). Fall/death penalty re-doubled -0.5 → -1.0 to cut that
-before graduating to the moving dummy. Rolling `win_mean` (stochastic)
-understates greedy win ~5x — gate on deterministic eval only.
+**Status (2026-06-13):** STAGE 1 — MOVING DUMMY (`opp_mode="patrol"`). Stage 0
+(HP-25 stationary dummy) plateaued at deterministic win ~0.45 / fell ~0.22 /
+arms ~0.95 (greedy arms fine — the cap was falls + fail-to-finish, not weapon
+RNG). A fall/death-penalty experiment (-0.5 → -1.0) BACKFIRED: falls went to 0
+but the greedy policy went passive (win 0.04, arms 0.04) — the dummy spawns
+~3u from the void edge, so "don't die" collapsed to "don't approach." Reverted
+to -0.5 and advanced to a void-safe MOVING dummy (env drives the opp slot in a
+patrol, two-band veto on its own z keeps |z|<14, never fires) — it patrols
+*away* from the edge, relieving the kill-vs-fall tension. Resumed from the
+engaging 992k policy (timid ckpts archived). Gate on deterministic eval; if
+rollout win_mean spikes >0.55 the dummy is self-destructing (check the veto).
+`eval_checkpoint.py` still evals vs `hold`; point it at `patrol` for a
+stage-faithful number.
 
 ## Build
 

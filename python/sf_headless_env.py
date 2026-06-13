@@ -118,6 +118,13 @@ class SFHeadlessEnv(gym.Env):
         # When "hold", launch with SFGYM_RL_SLOTS=<my_slot>,<opp_slot> so the
         # scripted driver yields both slots to us.
         self.opp_mode = opp_mode
+        # Moving-dummy (opp_mode=="patrol") state: phase counter, current walk
+        # direction (+1/-1), the dummy's last-seen z (for the void veto), and
+        # the direction-flip cadence (~1.75s at 20Hz poll).
+        self._opp_phase = 0
+        self._opp_dir = 1
+        self._last_opp_z = 0.0
+        self._patrol_period = 35
         self.dt = 1.0 / poll_hz
         self.max_steps = max_steps
         self.reset_timeout = reset_timeout
@@ -175,10 +182,41 @@ class SFHeadlessEnv(gym.Env):
         return self._rpc({"cmd": "snapshot"})
 
     def _hold_opp(self):
-        # Pin the opponent slot stationary (curriculum stage 0 dummy).
+        # Drive the opponent slot for curriculum stages where the ENV (not the
+        # in-host scripted bot) controls it.
+        #   "hold"   -> stationary dummy (stage 0).
+        #   "patrol" -> MOVING dummy (stage 1): walks back and forth, NEVER
+        #               fires or aims at us. Void-SAFE by construction — a
+        #               two-band veto on the dummy's OWN z keeps |z| < ~14 so
+        #               it can't self-destruct (a fallen opp = opp_dead = a
+        #               FREE win that would corrupt win_mean).
         if self.opp_mode == "hold":
             self._send_nowait({"cmd": "setBotAction", "slot": self.opp_slot,
                                "mx": 0.0, "my": 0.0, "aimx": 1.0, "aimy": 0.0, "buttons": 0})
+        elif self.opp_mode == "patrol":
+            self._opp_phase += 1
+            if self._opp_phase >= self._patrol_period:
+                self._opp_phase = 0
+                self._opp_dir = -self._opp_dir
+            mx = float(self._opp_dir)
+            # Sign convention (env obs comment ~ln 258 + CLAUDE.md): MoveX>0 ->
+            # Right() -> -z, i.e. mx>0 DECREASES z (toward the -z void edge),
+            # mx<0 increases z (toward +z edge). Two-band veto on the dummy's
+            # cached z (runtime SF_VOID_Z, default 17): hard-correct inward
+            # past |z|>14, soft-veto further-outward past |z|>12.5.
+            z = self._last_opp_z
+            hard = _VOID_Z - 3.0
+            soft = _VOID_Z - 4.5
+            if z < -hard:
+                mx = -1.0            # near -z edge -> move +z
+            elif z > hard:
+                mx = 1.0             # near +z edge -> move -z
+            elif z < -soft and mx > 0:
+                mx = 0.0             # in -z soft band, don't head further -z
+            elif z > soft and mx < 0:
+                mx = 0.0             # in +z soft band, don't head further +z
+            self._send_nowait({"cmd": "setBotAction", "slot": self.opp_slot,
+                               "mx": mx, "my": 0.0, "aimx": 1.0, "aimy": 0.0, "buttons": 0})
 
     def _send_action(self, action):
         move, jump, fire = int(action[0]), int(action[1]), int(action[2])
@@ -210,6 +248,10 @@ class SFHeadlessEnv(gym.Env):
     def _build_obs(self, snap):
         me = self._ent(snap, self.my_slot)
         op = self._ent(snap, self.opp_slot)
+        # Cache the opponent's z every obs build (reset + step) so the patrol
+        # void-veto in _hold_opp always has a fresh position to clamp against.
+        if op is not None:
+            self._last_opp_z = float(op.get("z", self._last_opp_z))
 
         def feats(e):
             # 19 per-ent features: kinematics(6) + hp/alive/armed(3) + Tier-2/3
@@ -428,19 +470,19 @@ class SFHeadlessEnv(gym.Env):
             reward += 1.0 + 0.5 * max(0.0, 1.0 - self._steps / self.max_steps)
             terminated = True
         elif self_dead:
-            # 2026-06-06: halved -1.0 -> -0.5 (fall-spike variance destabilized
-            # PPO in the PRE-target_kl era).
-            # 2026-06-13: RE-DOUBLED to -1.0. A 20-ep deterministic eval of the
-            # 984k tip showed fell=0.25 — the greedy policy marches decisively
-            # at the dummy (which sits ~3u from the void edge) and overshoots
-            # into the void 1-in-4 episodes, the single biggest fixable loss
-            # bucket (win 0.50 / fell 0.25 / arms 1.05). With target_kl=0.02 +
-            # n_epochs=10 now absorbing the variance the halving compensated
-            # for, the stronger "don't die" signal is affordable. NOTE: at this
-            # stage every death IS a fall (stationary dummy can't kill); when
-            # stage 1 adds a fighting opponent, SPLIT this into fall(-1.0) vs
-            # combat-death(-0.5) so the agent isn't timid about earned deaths.
-            reward -= 1.0; terminated = True
+            # Death penalty history: -1.0 (orig) -> -0.5 (2026-06-06, fall
+            # variance) -> -1.0 (2026-06-13, to cut fell 0.25) -> -0.5 AGAIN
+            # (2026-06-13). The -1.0 BACKFIRED: a deterministic eval at 1016k
+            # (24k steps post-doubling) showed fell DID drop to 0.00, but the
+            # greedy policy went PASSIVE — win 0.45->0.04, arms 0.95->0.04. The
+            # dummy sits ~3u from the void edge, so "don't die" collapsed into
+            # "don't approach the dummy at all" — falls and the kill objective
+            # are in geometric tension on a stationary-near-edge target, so a
+            # death penalty can't fix falls here. Reverted to -0.5 (engaging)
+            # and moved the falls problem to the MOVING dummy (opp_mode=
+            # "patrol"), which patrols AWAY from the edge and relieves the
+            # tension. (TRAINING_LOG 2026-06-13.)
+            reward -= 0.5; terminated = True
         elif cur_round != self._round:
             terminated = True  # round advanced (stall/other) — episode boundary
 
