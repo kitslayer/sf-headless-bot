@@ -428,12 +428,19 @@ class SFHeadlessEnv(gym.Env):
             reward += 1.0 + 0.5 * max(0.0, 1.0 - self._steps / self.max_steps)
             terminated = True
         elif self_dead:
-            # 2026-06-06 tuning: death (vs a stationary dummy this is almost
-            # always a fall off Desert3's edge) was -1.0 == a full kill, so the
-            # high-variance fall spike dominated and destabilized PPO. Halve it
-            # so a kill (+1.0) is worth 2 falls — biases toward finishing the
-            # opponent over timid edge-camping, and cuts the reward variance.
-            reward -= 0.5; terminated = True
+            # 2026-06-06: halved -1.0 -> -0.5 (fall-spike variance destabilized
+            # PPO in the PRE-target_kl era).
+            # 2026-06-13: RE-DOUBLED to -1.0. A 20-ep deterministic eval of the
+            # 984k tip showed fell=0.25 — the greedy policy marches decisively
+            # at the dummy (which sits ~3u from the void edge) and overshoots
+            # into the void 1-in-4 episodes, the single biggest fixable loss
+            # bucket (win 0.50 / fell 0.25 / arms 1.05). With target_kl=0.02 +
+            # n_epochs=10 now absorbing the variance the halving compensated
+            # for, the stronger "don't die" signal is affordable. NOTE: at this
+            # stage every death IS a fall (stationary dummy can't kill); when
+            # stage 1 adds a fighting opponent, SPLIT this into fall(-1.0) vs
+            # combat-death(-0.5) so the agent isn't timid about earned deaths.
+            reward -= 1.0; terminated = True
         elif cur_round != self._round:
             terminated = True  # round advanced (stall/other) — episode boundary
 

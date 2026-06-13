@@ -101,9 +101,15 @@ def main():
             lengths.append(ep_len)
             ep_len = 0
             done_count += 1
-            if done_count % 10 == 0:
+            if done_count % 5 == 0:
+                # Include running arms/hits/len so a partial run (the eval
+                # instance tends to wedge ~20 eps) still surfaces the
+                # armed-vs-inefficient breakdown — the final summary block
+                # never prints if the process is Killed mid-run.
                 print(f"[eval] {done_count}/{args.episodes} "
-                      f"win={wins/done_count:.3f} fell={fell/done_count:.3f}", flush=True)
+                      f"win={wins/done_count:.3f} fell={fell/done_count:.3f} "
+                      f"arms={np.mean(arms):.2f} hits={np.mean(hits):.2f} "
+                      f"len={np.mean(lengths):.0f}", flush=True)
     venv.close()
     n = args.episodes
     print(f"\n===== EVAL RESULT ({mode}) =====")

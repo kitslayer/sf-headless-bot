@@ -25,9 +25,10 @@ StickFight.exe -batchmode  (xvfb, Wine/Proton, N instances)
 
 python/
  ├ sf_headless_env.py      Gym env, 78-dim obs, auto-aim, MultiDiscrete
- │                         [move(3), jump(2), fire(2)], kill-biased reward
- │                         (damage asym, per-hit floor, pickup + armed
- │                         trickle, fast-kill bonus)
+ │                         [move(3), jump(2), fire(2)], slot-swap spatial
+ │                         diversity, kill-biased reward (damage asym,
+ │                         per-hit floor, pickup + armed trickle, fast-kill
+ │                         bonus, fall/death penalty -1.0)
  ├ train_headless_ppo.py   PPO + KickstartPPO (decaying BC anchor on
  │                         teacher demos, critic-warmup phase, LR warmup,
  │                         frozen VecNormalize) with auto-resume
@@ -49,12 +50,22 @@ the single source of truth the instances source), `scripts/watchdog.sh`
    stationary dummy at `SF_STAGE_HP=25` (the stock HP option scales damage,
    so kills are ~1 clip) → HP 100 → moving dummy → weakened scripted bot →
    self-play pool. Fixed map per stage.
-2. **Imitation bootstrap**: run the fleet with `SFGYM_RL_SLOTS=1` so the
-   teacher drives slot 0, `collect_demos.py` for ~2h (~100k pairs), then
-   `bc_pretrain.py` → checkpoint, then back to `SFGYM_RL_SLOTS=0,1`.
-3. **KickstartPPO**: resumes from the clone; value head recalibrates first
-   (policy frozen), then PPO trains with a BC anchor that decays to zero.
+2. **Current run = plain PPO** from the pre-BC `ppo_headless_800000` tip with
+   `randomize_slot` spatial diversity + `SF_STAGE_HP=25`. The BC/Kickstart
+   bootstrap (steps below) is BUILT but GATED OFF (`run/USE_KICKSTART`): BC
+   from the fixed-spawn teacher collapsed to a constant cliff-march
+   (deterministic fell 0.83). Re-enable only with diverse-spawn demos.
+3. **Imitation bootstrap (dormant)**: `SFGYM_RL_SLOTS=1` → teacher drives
+   slot 0, `collect_demos.py` (~100k pairs) → `bc_pretrain.py` → checkpoint,
+   then `KickstartPPO` resumes with a decaying BC anchor + critic warmup.
    Recollect demos whenever the opponent stage changes.
+
+**Status (2026-06-13):** stage 0 (HP-25 stationary dummy). Deterministic-eval
+baseline at 984k: win ~0.50 / fell 0.25 / arms 1.05 — the greedy policy arms
+itself fine but self-destructs off the void edge ~1-in-4 (the binding loss
+bucket, not weapon RNG). Fall/death penalty re-doubled -0.5 → -1.0 to cut that
+before graduating to the moving dummy. Rolling `win_mean` (stochastic)
+understates greedy win ~5x — gate on deterministic eval only.
 
 ## Build
 

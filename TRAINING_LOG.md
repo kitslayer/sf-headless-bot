@@ -516,3 +516,59 @@ void shaping — reversible); (3) keep grinding HP-25 (diminishing returns).
 Leaning (2) then (1). NOT forcing a stage change unilaterally — training
 continues at HP-25, watched, pending Miles. Also: add the 5th eval
 instance to the watchdog so evals don't cap at ~20 eps.
+
+## 2026-06-13 09:00 — autonomous decision: subagent-reviewed, FALLS-FIX first (data-backed)
+
+Miles is away under the standing directive ("apply each stage, dont stop till
+im back... use best judgement and when needed use subagents to review
+decisions"). The dummy plateau had sat ~3h, so I exercised that authority
+instead of idling the watch loop — with an independent subagent review of the
+stage-advance decision (the review the directive calls for).
+
+**Subagent review verdict (general-purpose, read the code):** fix the greedy
+falls FIRST, then advance to a moving dummy. Reasons: (a) advancing the
+opponent now CONFOUNDS the plateau diagnosis (is 0.50 RNG-capped, or are we
+throwing away winnable episodes off the edge?); (b) the fall defect rides into
+stage 1 and gets WORSE there (a moving target can bait the agent toward
+edges); (c) falls-fix is the cheapest reversible lever. It also KILLED the
+"weakened scripted" option: grepped the host — `SFGYM_BOT_AGGRO/REACTION/
+AIM_NOISE` do NOT exist in `SFHeadlessHost.DriveScriptedBots` (those belong to
+the *other* mod, `mod/StickFightGym/ScriptedBot`). And it confirmed the moving
+dummy is env-only + void-safe (per-slot `rays` exist in the snapshot; port the
+host's two-band void veto at runtime `SF_VOID_Z=17`, NOT the stale 19 in code
+comments).
+
+**Diagnostic baseline (deterministic, 984k tip, 20 eps before the 5th instance
+wedged; eval_checkpoint.py now prints arms/hits/len every 5 eps so partial runs
+are usable):**
+  win 0.50 | fell 0.25 | arms 1.05 | hits 1.05 | len 198
+Loss-bucket breakdown that this finally exposed:
+  - **win 0.50** robust (eval#1 0.45, #2 0.55, this 0.50) — plateau is real.
+  - **fell 0.25** is the TRUE greedy fall rate. eval#1's 0.05 was an unlucky-low
+    draw, the first 5 eps here (0.00) a lucky one; it settles ~0.25. 1-in-4
+    episodes the argmax policy marches off the void edge.
+  - **arms 1.05** — the greedy policy DOES fetch a weapon nearly every episode
+    (stochastic arms ~0.23 was just exploration noise, same ~5x understatement
+    as win_mean). So 0.50 is NOT "no reachable weapon / RNG-capped" — it's
+    falls (0.25) + fail-to-finish (only ~1 damaging tick/ep converts).
+  Mechanism: the stationary dummy sits ~3u from the void edge; the agent
+  closing to melee/point-blank overshoots into the void. Greedy commits harder
+  → overshoots more (greedy fell 0.25 >> stochastic ~0.09).
+
+**Action (single lever, reversible):** `sf_headless_env.py` death penalty
+-0.5 → -1.0. The -0.5 was a 2026-06-06 halving to tame fall-spike variance in
+the PRE-`target_kl` era; `target_kl=0.02` + `n_epochs=10` now absorb that, so
+the stronger "don't die" signal is affordable. At this stage every death IS a
+fall (dummy can't kill), so this is exactly a fall penalty; when stage 1 adds a
+fighting opponent, SPLIT into fall(-1.0) vs combat-death(-0.5) so the agent
+isn't timid about earned deaths. Resume boundary recorded at the deploy below.
+
+**Watch for:** (timidity) deterministic win dropping >0.05 below 0.50 while
+fell improves → too strong, try a shaped edge-proximity term instead; (no
+help) fell still ~0.2 at the next eval → escalate to edge shaping. Re-eval at
+~next checkpoints. If fell drops toward ≤0.1 and win holds/climbs, advance to
+the moving dummy (stage 1, env-only `opp_mode="patrol"`, void-safe via the
+opp's own rays). Rolling win_mean stays the noisy stochastic score; gate on
+deterministic eval only. Infra note: the "two supervisors" flagged in review is
+benign — one supervisor (pid 1519342) + its trainer-holding `( )&` subshell
+(1527181), confirmed by parent-child ppid.
