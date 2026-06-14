@@ -177,45 +177,89 @@ class SFHeadlessEnv(gym.Env):
         self._opp_obs_var = None
         self._opp_obs_eps = 1e-8
         self._opp_obs_clip = 50.0
+        # League pool: list of loaded opponents {model,mean,var,eps,clip,name}.
+        # Single-opp = a 1-element pool. reset() samples one per episode when >1.
+        self._opp_pool = []
+        self._opp_name = ""
         if self.opp_mode == "selfplay":
             self._load_selfplay_opponent()
 
     # ---- selfplay opponent loading ----
     def _load_selfplay_opponent(self):
-        """Load a frozen PPO policy + its matching VecNormalize obs stats to
-        drive the opponent slot. v1 = STATIC: loaded ONCE at construction, never
-        refreshed. Auto-refresh / league logic is intentionally out of scope —
-        see the TODO at _opp_action and the trainer-side hook note."""
-        from stable_baselines3 import PPO  # local import: only needed for selfplay
+        """Populate self._opp_pool with one or more frozen PPO opponents, then
+        activate one via _select_opp().
 
+        - POOL (>1 path in SF_SELFPLAY_POOL, OR a multi-entry SF_SELFPLAY_CKPT —
+          comma/space/newline-separated). Each path loads with its matching
+          VecNormalize stats and reset() samples one per episode (FICTITIOUS
+          SELF-PLAY) so the learner must beat the DISTRIBUTION of past selves —
+          fixes the single-opp ladder's non-transitive forgetting (eval B
+          0.80->0.70 vs old opp). Overloading SF_SELFPLAY_CKPT means the pool
+          deploys via run/SELFPLAY_CKPT + a trainer restart, NO supervisor change.
+        - SINGLE (default, backward compatible): a single-path SF_SELFPLAY_CKPT,
+          else the latest models/ppo_headless_<N>_steps.zip.
+        If nothing loads, the opp slot stays STATIONARY (like opp_mode='hold')."""
         repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
         models_dir = os.path.join(repo_root, "models")
-        ckpt = os.environ.get("SF_SELFPLAY_CKPT", "")
-        if ckpt and not os.path.isabs(ckpt):
-            ckpt = os.path.join(repo_root, ckpt)
-        if not ckpt:
-            # Same selection logic as eval_checkpoint.latest_checkpoint():
-            # highest-N ppo_headless_<N>_steps.zip.
-            best_n, best = -1, None
-            for z in glob.glob(os.path.join(models_dir, "ppo_headless_*_steps.zip")):
-                m = re.search(r"ppo_headless_(\d+)_steps\.zip$", z)
-                if m and int(m.group(1)) > best_n:
-                    best_n, best = int(m.group(1)), z
-            ckpt = best
-        if not ckpt or not os.path.exists(ckpt):
+        # Pool source: explicit SF_SELFPLAY_POOL, else a MULTI-entry
+        # SF_SELFPLAY_CKPT. Overloading SF_SELFPLAY_CKPT lets the existing
+        # supervisor (already exports it from run/SELFPLAY_CKPT) switch to pool
+        # mode with NO supervisor change — just write several paths into that
+        # file. A single-entry value stays single-opp (backward compatible).
+        spec = (os.environ.get("SF_SELFPLAY_POOL", "").strip()
+                or os.environ.get("SF_SELFPLAY_CKPT", "").strip())
+        paths = [q for q in re.split(r"[,\s]+", spec) if q] if spec else []
+        if len(paths) > 1:
+            for p in paths:
+                if not os.path.isabs(p):
+                    p = os.path.join(repo_root, p)
+                opp = self._load_one_opp(p)
+                if opp is not None:
+                    self._opp_pool.append(opp)
+            if self._opp_pool:
+                print(f"[selfplay] POOL mode: {len(self._opp_pool)} opponents "
+                      f"{[o['name'] for o in self._opp_pool]} (uniform/episode)")
+            else:
+                print("[selfplay] WARNING: pool spec set but none loaded; "
+                      "falling back to latest.")
+        if not self._opp_pool:
+            ckpt = paths[0] if paths else ""
+            if ckpt and not os.path.isabs(ckpt):
+                ckpt = os.path.join(repo_root, ckpt)
+            if not ckpt:
+                # latest models/ppo_headless_<N>_steps.zip (eval_checkpoint parity)
+                best_n, best = -1, None
+                for z in glob.glob(os.path.join(models_dir, "ppo_headless_*_steps.zip")):
+                    m = re.search(r"ppo_headless_(\d+)_steps\.zip$", z)
+                    if m and int(m.group(1)) > best_n:
+                        best_n, best = int(m.group(1)), z
+                ckpt = best
+            opp = self._load_one_opp(ckpt, allow_vn_override=True) if ckpt else None
+            if opp is not None:
+                self._opp_pool = [opp]
+        if not self._opp_pool:
             print(f"[selfplay] WARNING: no opponent checkpoint found "
-                  f"(SF_SELFPLAY_CKPT={os.environ.get('SF_SELFPLAY_CKPT','')!r}, "
-                  f"models={models_dir}). Falling back to STATIONARY opp "
-                  f"(behaves like opp_mode='hold').")
-            return
-        self._opp_model = PPO.load(ckpt, device="cpu")
-        print(f"[selfplay] loaded frozen opponent: {os.path.basename(ckpt)}")
+                  f"(spec={spec!r}, models={models_dir}). Falling back to "
+                  f"STATIONARY opp (behaves like opp_mode='hold').")
+        self._select_opp()
 
-        # Matching VecNormalize stats: prefer an env override, else the
-        # step-matched pkl next to the checkpoint (same pattern as
-        # eval_checkpoint.py). Read obs_rms mean/var + the wrapper's epsilon and
-        # clip_obs; apply np.clip((obs-mean)/sqrt(var+eps), -clip, clip).
-        vn_path = os.environ.get("SF_SELFPLAY_VECNORM", "")
+    def _load_one_opp(self, ckpt, allow_vn_override=False):
+        """Load one frozen PPO + its matching VecNormalize stats. Returns a dict
+        {model, mean, var, eps, clip, name} or None if the ckpt is missing. The
+        vecnorm pkl is unpickled DIRECTLY (not VecNormalize.load, which calls
+        set_venv() and needs a live venv) to read obs_rms.mean/var + eps + clip."""
+        from stable_baselines3 import PPO  # local import: only needed for selfplay
+        if not ckpt or not os.path.exists(ckpt):
+            print(f"[selfplay] WARNING: opponent checkpoint missing: {ckpt!r}")
+            return None
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+        models_dir = os.path.join(repo_root, "models")
+        model = PPO.load(ckpt, device="cpu")
+        mean = var = None
+        eps, clip = 1e-8, 50.0
+        # VecNormalize: env override applies to SINGLE-opp only (each pool member
+        # uses its OWN step-matched pkl).
+        vn_path = os.environ.get("SF_SELFPLAY_VECNORM", "") if allow_vn_override else ""
         if vn_path and not os.path.isabs(vn_path):
             vn_path = os.path.join(repo_root, vn_path)
         if not vn_path:
@@ -224,24 +268,36 @@ class SFHeadlessEnv(gym.Env):
                 vn_path = os.path.join(
                     models_dir, f"ppo_headless_vecnormalize_{m.group(1)}_steps.pkl")
         if vn_path and os.path.exists(vn_path):
-            # Unpickle directly rather than VecNormalize.load(): the latter
-            # calls set_venv() and needs a live venv (crashes on venv=None). We
-            # only want the frozen obs_rms / epsilon / clip_obs scalars.
             import pickle
             with open(vn_path, "rb") as f:
                 vn = pickle.load(f)
-            self._opp_obs_mean = np.asarray(vn.obs_rms.mean, dtype=np.float32)
-            self._opp_obs_var = np.asarray(vn.obs_rms.var, dtype=np.float32)
-            self._opp_obs_eps = float(vn.epsilon)
-            self._opp_obs_clip = float(vn.clip_obs)
-            print(f"[selfplay] loaded opponent vecnormalize stats "
-                  f"{os.path.basename(vn_path)} (clip_obs={self._opp_obs_clip}, "
-                  f"eps={self._opp_obs_eps})")
+            mean = np.asarray(vn.obs_rms.mean, dtype=np.float32)
+            var = np.asarray(vn.obs_rms.var, dtype=np.float32)
+            eps = float(vn.epsilon)
+            clip = float(vn.clip_obs)
+            print(f"[selfplay] loaded opponent {os.path.basename(ckpt)} + vecnorm "
+                  f"{os.path.basename(vn_path)} (clip={clip}, eps={eps})")
         else:
-            print(f"[selfplay] WARNING: no vecnormalize stats for opponent "
-                  f"(looked for {vn_path!r}). The frozen opp was trained on "
-                  f"NORMALIZED obs; feeding it RAW obs may make it act "
-                  f"erratically/weakly. Proceeding with raw obs.")
+            print(f"[selfplay] loaded opponent {os.path.basename(ckpt)} WARNING "
+                  f"no vecnorm ({vn_path!r}); feeding RAW obs (may act weakly).")
+        return {"model": model, "mean": mean, "var": var, "eps": eps,
+                "clip": clip, "name": os.path.basename(ckpt)}
+
+    def _select_opp(self):
+        """Activate one pool opponent as the current frozen opp. Uniform sample
+        (fictitious self-play); single-opp pools are a no-op. np.random is
+        per-process-seeded by SB3 so workers sample independently each episode."""
+        if not self._opp_pool:
+            self._opp_model = None
+            return
+        opp = (self._opp_pool[0] if len(self._opp_pool) == 1
+               else self._opp_pool[int(np.random.randint(len(self._opp_pool)))])
+        self._opp_model = opp["model"]
+        self._opp_obs_mean = opp["mean"]
+        self._opp_obs_var = opp["var"]
+        self._opp_obs_eps = opp["eps"]
+        self._opp_obs_clip = opp["clip"]
+        self._opp_name = opp["name"]
 
     def _normalize_opp_obs(self, obs):
         """Normalize the opponent's raw obs with its frozen VecNormalize stats,
@@ -528,6 +584,13 @@ class SFHeadlessEnv(gym.Env):
         if self.randomize_slot:
             self.my_slot = int(self.np_random.integers(0, 2))
             self.opp_slot = 1 - self.my_slot
+        # League pool: sample which frozen opponent drives the opp slot THIS
+        # episode (fictitious self-play vs the pool — prevents single-opp
+        # cycling). No-op for a 1-element pool. Safe here: reset's hold loop
+        # sends only neutral holds, not _opp_action, so the swap commits before
+        # the first step's _opp_action uses self._opp_model.
+        if self.opp_mode == "selfplay" and len(self._opp_pool) > 1:
+            self._select_opp()
         # The host auto-cycles rounds on death/stall. We sync the episode to a
         # round boundary: note the current round, then wait until the round
         # NUMBER advances and both bots are present & alive (a freshly-spawned

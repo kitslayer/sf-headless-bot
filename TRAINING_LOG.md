@@ -836,3 +836,38 @@ gate, so refreshed:
   Next eval gate ts 1.49M: eval vs BOTH 1327996 (gate; refresh again if >0.65)
   and 1104000 (forgetting check; should still win ≥0.7). 1104000 path in
   run/SELFPLAY_CKPT.prev.
+
+## 2026-06-14 09:12 — LEAGUE-REFRESH #2 + PFSP POOL deployed (autonomous)
+**Two-opponent deterministic eval at ts~1.49M (learner ckpt 1487996):**
+- vs CURRENT frozen opp 1327996 (gate): WIN 0.650 (13/20), fell 0.15, arms 1.10, hits 1.10
+- vs OLD opp 1104000 (forgetting check): WIN 0.700 (14/20), fell 0.10, arms 0.90, hits 1.30
+
+Read: 0.65 passed the refresh gate (healthy tightening vs the near-mirror, 0.80->0.65
+across refreshes = approaching equilibrium). BUT vs 1104k the learner dropped 0.80
+(@ckpt1327996) -> 0.70 (@ckpt1487996) = the single-opp ladder's NON-TRANSITIVE
+forgetting, the pre-committed trigger for a pool.
+
+Actions:
+1. **League-refresh #2**: run/SELFPLAY_CKPT 1327996 -> 1487996 (verified live via
+   worker environ; the train.log "loaded 1327996" lines were dying-worker
+   interleave again).
+2. **PFSP POOL built + deployed** (supersedes #2, includes 1487996 so no regression):
+   - sf_headless_env.py: _load_selfplay_opponent now builds self._opp_pool from
+     a multi-entry SF_SELFPLAY_CKPT (or SF_SELFPLAY_POOL); _load_one_opp factored
+     out (per-opp model+vecnorm); _select_opp() samples one per episode in reset()
+     (FICTITIOUS SELF-PLAY). Single-entry = single-opp (backward compatible).
+     Hot path (_opp_action/_normalize_opp_obs) UNCHANGED.
+   - Deploy with NO supervisor change: wrote 3 paths into run/SELFPLAY_CKPT (the
+     var the supervisor already exports) + trainer-only restart. Pool =
+     {1104000, 1327996, 1487996}. (run/SELFPLAY_CKPT.single_prepool = revert point.)
+   - Validated: python/pool_smoke.py (3 tests: single backward-compat, multi-entry
+     ckpt overload, explicit pool — all pass) + LIVE confirm (trainer+2 workers all
+     have 3-path SF_SELFPLAY_CKPT via Python NUL-split /proc/environ read).
+**VERIFICATION LESSON:** train.log is BLOCK-BUFFERED (not a TTY) — post-restart
+`[selfplay]`/`POOL mode` lines lag minutes, and dying-trainer buffers flush late and
+interleave. The reliable refresh/pool verification is the PROCESS ENVIRON via Python
+NUL-split (`open('/proc/PID/environ','rb').read().split(b'\0')`), NOT the log and NOT
+`grep -z` (misfires on multi-line values).
+NEXT: eval at ts~1.54M vs ALL 3 pool members — expect forgetting FIXED (beats
+1104k/1327k again) + competitive vs 1487k. Grow the league (add newer snapshots) as
+the learner climbs. Pool runs at 2 instances; 3 models/worker ~+300MB RAM (fine).
