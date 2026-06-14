@@ -792,3 +792,47 @@ N frozen ckpts, sample one per episode). Also reconsider the arm incentive then.
 NOT intervening yet (2 noisy 20-ep evals at ~0.35 ≠ conclusive stagnation; falls-
 solved shows the learner CAN improve sub-skills). gate = deterministic eval +
 ep_rew_mean, NOT rollout win_mean (entropy-depressed in self-play).
+
+## 2026-06-14 01:25 — flap diagnosis (autonomous, no intervention)
+Investigated 3 single-bridge flaps in ~20 min during self-play (ts ~1.315M).
+Root cause is NOT a new fault — it's the known 2-instance steady state:
+- `oracle{0,1}-plugin.log` grow ~1MB/min from STOCK SF `Debug.Log`
+  ("Writing GroundWeapon With Pos ... sync index N"), amplified by weapons=HIGH
+  + self-play. Watchdog truncates at ~100MB/min so it's bounded; disk steady 87%.
+- Watchdog correctly restarts each hung instance within its 2-strike window
+  ("unresponsive 2 cycles (hung)"); ts keeps climbing at normal cadence;
+  trainer self-recovers BrokenPipe via supervisor.
+- 148 NullReferenceException/min in oracle0 are CAUGHT (Warning-level via
+  `EnsurePreSpawned` try/catch, mono TargetInvocationException path) and have
+  coexisted with healthy training for 200k+ steps.
+Decision: keep babysitting; do NOT fleet-restart to raise log level or rebuild
+host mid-run (costs more than the flaps; eval uses separate bridge 1349).
+FOLLOW-UP (daylight, low-pri): trace the `EnsurePreSpawned` NullRef and consider
+raising BepInEx LogLevel to drop the GroundWeapon spew (needs fleet restart).
+Escalate only if: wd_restarts >+5/tick, both bridges down simultaneously, or FROZEN2.
+
+## 2026-06-14 02:24 — SELF-PLAY BREAKTHROUGH + LEAGUE-REFRESH #1 (autonomous)
+**Deterministic eval at ts~1.332M (ckpt 1327996) vs frozen opp 1104000: WIN 0.800
+(16/20)**, fell 0.150, arms/ep 1.15, hits/ep 1.60, len 146. Prior evals were
+0.35 @1.168M and 0.35 @1.240M — the "stagnant at 0.35" read was WRONG; self-play
+just needed more steps. The learner now decisively beats the frozen 1104k opp,
+arming reliably (1.15/ep) and landing 1.6 hits/ep. 0.80 ≫ the 0.65 league-refresh
+gate, so refreshed:
+- `run/SELFPLAY_CKPT`: 1104000 → **1327996** (old saved to `.prev` for a
+  regression/forgetting check). Learner resumes from latest (1335996) → faces a
+  near-mirror ~50% matchup → dense gradient again.
+- Mechanism: supervisor re-reads run/SELFPLAY_CKPT + re-exports SF_SELFPLAY_CKPT
+  on every trainer (re)launch (line 65), so refresh = edit file + kill trainer
+  only (NO supervisor restart; fleet untouched). Supervisor relaunches ≤60s.
+- **GOTCHA (cost ~2 rekills to nail):** after the kill, `train.log` (append mode,
+  shared) showed `[selfplay] loaded frozen opponent: 1104000` even though the LIVE
+  trainer+workers' `/proc/PID/environ` said 1327996. Those 1104000 lines were
+  STALE buffered output from the killed trainer's dying workers, interleaving into
+  the log right before the new trainer's resume line during a bridge-1342 flap.
+  Verify a refresh by (a) `/proc/PID/environ` of the live trainer AND its workers
+  (`pgrep -P`), and (b) reading ONLY post-kill bytes (`tail -c +OFFSET`), NOT a
+  raw `tail`. Clean confirmation restart showed both workers loaded 1327996. ✓
+- Post-refresh expectation: rollout win DROPS (stronger opp) — NOT a regression.
+  Next eval gate ts 1.49M: eval vs BOTH 1327996 (gate; refresh again if >0.65)
+  and 1104000 (forgetting check; should still win ≥0.7). 1104000 path in
+  run/SELFPLAY_CKPT.prev.
