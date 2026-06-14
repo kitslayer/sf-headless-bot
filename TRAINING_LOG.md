@@ -871,3 +871,47 @@ NUL-split (`open('/proc/PID/environ','rb').read().split(b'\0')`), NOT the log an
 NEXT: eval at ts~1.54M vs ALL 3 pool members — expect forgetting FIXED (beats
 1104k/1327k again) + competitive vs 1487k. Grow the league (add newer snapshots) as
 the learner climbs. Pool runs at 2 instances; 3 models/worker ~+300MB RAM (fine).
+
+## 2026-06-14 11:16 — first POOL eval (ts~1.54M, ~40k post-deploy) — INCONCLUSIVE, keep going
+Deterministic 20-ep evals, latest learner vs pool extremes:
+- vs OLD 1104000 (forgetting check): WIN 0.60 (12/20), fell 0.10, arms 0.70, hits 1.10
+  — BIMODAL (1.0 first 10 eps, ~0.3 last 10); ckpt 1535996.
+- vs strongest 1487996 (competitive): WIN 0.50 (10/20), fell 0.00, arms 0.55, hits 0.50
+  — clean ~50% equilibrium vs strongest past self; ckpt 1543996.
+Read: NOT the hoped "forgetting fixed -> 0.80 vs old". Instead a robust generalist
+(~0.5-0.6 across the spectrum, no catastrophic loss to anyone = what league play is)
+BUT arming ~halved (pre-pool 1.10/0.90 -> 0.70/0.55), likely caution learned vs the
+strong 1487k generalizing to all opps. Only ~40k steps post-pool-deploy (too early)
++ noisy (20 eps, bimodal, A/B used different ckpts). DECISION: keep the pool, +110k
+steps, re-eval CLEANLY at ts~1.65M vs all 3 (one ckpt). If arming stays suppressed
+AND win-vs-1104k hasn't recovered by then -> intervene: PFSP weighting (sample
+competitive opps more / weak less) or trim strong-opp frequency; possibly a small
+arming-reward nudge. NOT reverting on 40k of noisy data. Pool itself is healthy
+(falls ~0, ts climbing, load settled ~13-16, double-wedge at 10:09 self-healed).
+
+## 2026-06-14 16:20 — POOL CAUSED DETERMINISTIC COLLAPSE -> REVERTED to single-opp
+Re-eval at ts~1.65M (~150k post-pool) vs all 3 pool members: WIN 0.00 / 0.00 / 0.00,
+arms ~0.1, hits ~0.0. The argmax policy became a PASSIVE NO-OP (never arms, never hits).
+A/B disambiguation (same opp 1104000, identical contended conditions) CONFIRMED it's
+real, not an eval artifact:
+  - known-good 1487996: win 0.55, arms 0.70, hits 0.95  (eval infra sound)
+  - current   1655996: win 0.00, arms 0.00, hits 0.00  (collapsed)
+ROOT CAUSE (hypothesis): equal-weight FSP pool with the near-mirror STRONG opp (1487k)
+1/3 of episodes + the dense survival-shaped reward made "don't engage" locally optimal
+for the ARGMAX -> mode collapse to passivity. Rollout (stochastic) still explored combat
+(hits ~0.3), MASKING the collapse in win_mean -> only the DETERMINISTIC eval caught it.
+At 1.54M (40k post-pool) it was still 0.60/0.50 w/ arms halving (the early warning);
+by 1.65M it was total. REVERTED:
+  - run/SELFPLAY_CKPT -> SINGLE 1327996 (multi-entry->single auto-disables pool mode)
+  - archived 22 collapsed ckpts (1495996..1663996) -> models/archive-pool-collapse/
+  - trainer resumes from healthy 1487996 (now latest); ts rewound 1.66M->1.489M and
+    progressing; single-opp 1327996 (learner has ~0.65 edge -> rebuilds/keeps aggression).
+  - verified live via /proc/PID/environ (npaths=1) + resume-from-1487996 + ts=1489020.
+Pool CODE retained (gated behind multi-entry SELFPLAY_CKPT) but DO NOT re-enable without:
+(a) PFSP weighting (down-weight opps the learner loses to, so the strong near-mirror
+doesn't dominate), and/or (b) kill-weighted reward so passivity isn't safe, and/or
+(c) exclude the near-mirror until the learner is strong enough. LESSON: equal-weight FSP
++ survival reward => passive-argmax collapse; ALWAYS gate on deterministic eval (rollout
+win hides argmax mode-collapse); eval within ~40k of any opponent/curriculum change.
+NEXT: single-opp ladder resumes (the proven-good path: refresh #1 hit 0.80, #2 0.65);
+recovery-confirm eval at ts~1.52M, then continue the ladder.

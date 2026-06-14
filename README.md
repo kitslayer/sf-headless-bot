@@ -60,14 +60,18 @@ the single source of truth the instances source), `scripts/watchdog.sh`
    then `KickstartPPO` resumes with a decaying BC anchor + critic warmup.
    Recollect demos whenever the opponent stage changes.
 
-**Status (2026-06-14):** STAGE 2 — SELF-PLAY (`opp_mode="selfplay"`), now a
-**FICTITIOUS-SELF-PLAY LEAGUE POOL** (live ~ts1.50M). Single-opp ladder: refresh #1
-(opp 1104k→1327996 @ det win 0.80 @ts1.33M) then #2 (→1487996 @ 0.65 @ts1.49M)
-climbed fine, but the ts1.49M forgetting-check (win vs OLD 1104k dropped 0.80→0.70)
-exposed non-transitive forgetting → switched to a POOL {1104000,1327996,1487996}
-sampled per episode (the env builds the pool from a multi-entry `run/SELFPLAY_CKPT`,
-so it deploys with a trainer-only restart, no supervisor change). ("Flat 0.35"
-@1.17M/1.24M was just too-few-steps, not stagnation.)
+**Status (2026-06-14):** STAGE 2 — SELF-PLAY (`opp_mode="selfplay"`), **single
+frozen opponent** (learner resumed ckpt 1487996 vs frozen 1327996 @ ts~1.49M after a
+POOL REVERT). Single-opp ladder: refresh #1 (opp 1104k→1327996 @ det win 0.80 @ts1.33M)
+then #2 (→1487996 @ 0.65 @ts1.49M). A ts1.49M forgetting-check (win vs OLD 1104k
+0.80→0.70) prompted a fictitious-self-play POOL {1104000,1327996,1487996} — but ~150k
+steps in the EQUAL-WEIGHT pool **CATASTROPHICALLY COLLAPSED the deterministic policy to
+a passive no-op** (ts1.65M: win 0.00 / arms 0.00 / hits 0.00 vs all 3; A/B-confirmed
+real — known-good 1487996 scored 0.55 under identical conditions). REVERTED to
+single-opp, resumed from healthy 1487996, archived the collapsed ckpts
+(`models/archive-pool-collapse/`). Pool code stays gated behind a multi-entry
+`SF_SELFPLAY_CKPT` but needs PFSP weighting + kill-weighted reward before any retry
+(TRAINING_LOG 2026-06-14 16:20). ("Flat 0.35" @1.17M/1.24M was just too-few-steps.)
 Path here: stage 0 stationary dummy (det win ~0.45, capped
 by falls 0.22 + fail-to-finish) → a −0.5→−1.0 fall-penalty experiment that
 BACKFIRED (falls→0 but went passive, win 0.04, because the dummy camped ~3u from
@@ -88,14 +92,15 @@ one per episode in `reset()` (uniform = fictitious self-play; hot path unchanged
 Single-entry value = single-opp (backward compatible). Deploy/grow the pool = write
 the ckpt paths into `run/SELFPLAY_CKPT` (one per line) + kill TRAINER ONLY
 (supervisor relaunches ≤60s; no supervisor change). Offline check: `python/pool_smoke.py`.
-NEXT: eval at ts~1.54M vs ALL 3 pool members — expect the forgetting FIXED (beats
-1104k/1327k again) and competitive vs 1487k; then GROW the league (append newer
-snapshots) as the learner climbs toward superhuman. VERIFY a deploy via the PROCESS
-ENVIRON (`python` NUL-split of `/proc/PID/environ` for trainer+workers), NOT
-`train.log` — it is BLOCK-BUFFERED so `[selfplay]`/`POOL mode` lines lag minutes and
-dying-trainer buffers flush late & interleave (`grep -z` also misfires on the
-multi-line value). Runs at 2 instances (frozen-opp inference is CPU-heavy; pool adds
-~300MB/worker). Gate on deterministic eval (`run_eval.sh N "" selfplay`).
+NEXT: single-opp ladder resumes (the proven-good path). Recovery-confirm eval at
+ts~1.52M (expect combative ~0.6+ vs 1327996), then continue the ladder — refresh the
+single frozen opp to a newer snapshot once the learner reliably beats it (win >0.65).
+VERIFY any refresh via the PROCESS ENVIRON (`python` NUL-split of `/proc/PID/environ`
+for trainer+workers — count ckpt paths), NOT `train.log` (BLOCK-BUFFERED; `[selfplay]`
+lines lag & dying-trainer buffers interleave; `grep -z` misfires on multi-line values).
+ALWAYS gate on DETERMINISTIC eval — rollout win_mean HIDES argmax mode-collapse (the
+pool collapse was invisible in rollout, win 0.1-0.17, while det was 0.00). Runs at 2
+instances (frozen-opp inference CPU-heavy). Gate: `run_eval.sh N "" selfplay`.
 
 ## Build
 
