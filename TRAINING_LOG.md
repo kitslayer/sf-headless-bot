@@ -915,3 +915,25 @@ doesn't dominate), and/or (b) kill-weighted reward so passivity isn't safe, and/
 win hides argmax mode-collapse); eval within ~40k of any opponent/curriculum change.
 NEXT: single-opp ladder resumes (the proven-good path: refresh #1 hit 0.80, #2 0.65);
 recovery-confirm eval at ts~1.52M, then continue the ladder.
+
+## 2026-06-14 17:43 — REVERT RECOVERY CONFIRMED (single-opp healthy)
+Recovery-confirm det eval (learner 1519996, ~32k single-opp steps post-revert) vs
+training opp 1327996: WIN 0.65 (13/20), arms 0.90, hits 1.25, fell 0.25. Fully
+COMBATIVE again (vs the pool-collapse 0.00/0.00/0.00) — the revert to single-opp +
+resume-from-1487996 worked. Back on the proven ladder (matches refresh-#2-era 0.65).
+Plan: continue single-opp vs 1327996; re-eval at ts~1.58M; refresh the frozen opp to
+a recent snapshot only if solidly >0.65 (avoid borderline churn post-disaster). Pool
+stays shelved pending PFSP weighting + kill-weighted reward. (3 double-wedges today
+[10:09/15:55/17:30] all watchdog-self-healed in ~2-3min; ~1 per 2.5hr, tolerable;
+root-cause [oracle plugin-log GC spew?] is a daylight follow-up.)
+
+## 2026-06-14 20:10 — LEAGUE-REFRESH #3 (post-revert ladder healthy, hit 0.80)
+After the pool revert, the single-opp ladder recovered fast: det eval at ts~1.58M
+(learner 1575996) vs frozen 1327996 = WIN 0.80 (16/20), arms 1.10, hits 1.75 (best
+of session), fell 0.15 — up from the 0.65 recovery eval @1.52M. 0.80 >> 0.65 gate ->
+refresh #3: run/SELFPLAY_CKPT 1327996 -> 1575996 (.prev=1327996). Learner resumes
+~1583k vs near-self -> ~50%. Verified live via worker /proc/environ (npaths=1,
+1575996; the buffered log's "resuming 1487996"/"loaded 1327996" lines are stale).
+NEXT ladder-decision eval ts~1.64M; refresh again when it reliably clears 0.65.
+Pool stays shelved (needs PFSP weighting). Infra steady: ~4 double-wedges today all
+watchdog-self-healed; single-bridge flaps routine.

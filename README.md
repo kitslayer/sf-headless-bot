@@ -61,9 +61,11 @@ the single source of truth the instances source), `scripts/watchdog.sh`
    Recollect demos whenever the opponent stage changes.
 
 **Status (2026-06-14):** STAGE 2 — SELF-PLAY (`opp_mode="selfplay"`), **single
-frozen opponent** (learner resumed ckpt 1487996 vs frozen 1327996 @ ts~1.49M after a
-POOL REVERT). Single-opp ladder: refresh #1 (opp 1104k→1327996 @ det win 0.80 @ts1.33M)
-then #2 (→1487996 @ 0.65 @ts1.49M). A ts1.49M forgetting-check (win vs OLD 1104k
+frozen opponent — REFRESH #3 live (frozen opp 1575996, learner ~ts1.58M, climbing)**,
+fully recovered from a POOL REVERT (post-revert ladder hit **det win 0.80 vs 1327996
+@ts1.58M**, arms 1.10 / hits 1.75 → triggered refresh #3). Single-opp ladder: refresh #1
+(opp 1104k→1327996 @ det win 0.80 @ts1.33M), #2 (→1487996 @ 0.65 @ts1.49M), #3
+(→1575996 @ 0.80 @ts1.58M). A ts1.49M forgetting-check (win vs OLD 1104k
 0.80→0.70) prompted a fictitious-self-play POOL {1104000,1327996,1487996} — but ~150k
 steps in the EQUAL-WEIGHT pool **CATASTROPHICALLY COLLAPSED the deterministic policy to
 a passive no-op** (ts1.65M: win 0.00 / arms 0.00 / hits 0.00 vs all 3; A/B-confirmed
