@@ -60,8 +60,8 @@ the single source of truth the instances source), `scripts/watchdog.sh`
    then `KickstartPPO` resumes with a decaying BC anchor + critic warmup.
    Recollect demos whenever the opponent stage changes.
 
-**Status (2026-06-14):** STAGE 2 — SELF-PLAY (`opp_mode="selfplay"`), **single frozen opponent — ROLLED BACK to 1759996 after a refresh-#6 REGRESSION**
-(learner resumed from 1759996; recovery re-eval pending @ts1.81M). The ladder climbed
+**Status (2026-06-14):** STAGE 2 — SELF-PLAY (`opp_mode="selfplay"`), **single frozen opponent @ 1759996 — RECOVERED from a refresh-#6 regression (rollback worked; regression was stochastic, not reward)**
+(learner resumed from 1759996; re-trained from 1759996 -> recovered to 0.60 vs mirror @ts1.81M [was 0.30], combat restored; continuing the ladder, refresh #6 when >0.65). The ladder climbed
 cleanly through 5 refreshes (1.49M→1.82M @ det win 0.65-0.80) then the 6th stage
 REGRESSED — deterministic win dropped to 0.30 vs 1759996 AND 0.35 vs the weak 1104k,
 with falls 0.05→0.30, while shaped ep_rew ROSE (reward/win divergence at high skill;

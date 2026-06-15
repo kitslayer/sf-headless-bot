@@ -989,3 +989,17 @@ resume clean, re-eval at ts~1.81M vs 1759996 + 1104000.
     trickle terms) — NOT by raising the fall penalty. Possibly cap the ladder here
     (~1759996 is a strong policy: 0.65 vs 1695996, fell 0.05) + harden reward before
     pushing further.
+
+## 2026-06-15 08:25 — RECOVERY CONFIRMED (regression was stochastic, not reward)
+Recovery re-eval (learner 1807996, re-trained ~48k from 1759996): vs mirror 1759996
+WIN 0.60 (was 0.30 regressed), vs weak 1104000 WIN 0.60 (was 0.35), fell 0.20-0.25
+(was 0.30), arms ~1.1 hits ~1.2 (was 0.75/0.65). Combat restored, pulling ahead of
+the mirror again. KEY: same 1759996 start + SAME reward, a fresh trajectory recovered
+to 0.60 -> the refresh-#6 regression was a BAD STOCHASTIC TRAJECTORY, not systematic
+reward misalignment (a broken reward would have re-regressed this trajectory too). So
+NO reward rebalance needed; the rollback fixed it. fell 0.20-0.25 slightly elevated vs
+1759996's 0.05 — WATCH it. DECISION: continue ladder; 0.60 vs mirror is recovered but
+<0.65 refresh bar (like refresh-#4's first gate 0.60->0.75), keep training vs 1759996,
+re-eval ts~1.86M, refresh #6 when >0.65. Lesson reinforced: a single regression eval
+warranted ROLLBACK (stop bleeding) + RE-EVAL (not a blind reward change) — the re-eval
+distinguished stochastic drift from systematic, saving an unneeded reward rework.
