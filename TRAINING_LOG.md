@@ -1128,3 +1128,47 @@ no-arm basin — and/or a *weakened* scripted bot (needs new C# AGGRO knob in th
 DriveScriptedBots) at HP100, gated by the corrected slot-swap eval.** Lesson reinforced: a
 fixed-but-too-hard opponent + survival reward is a passivity trap just like equal-weight FSP;
 gate on DETERMINISTIC eval (rollout masked a full collapse for ~120k steps here).
+
+## 2026-06-15 20:25 — implemented ALL THREE plateau-breakers (reward + weakened bot + gate) → SCRIPTED@AGGRO0.4
+Per Miles ("do 1-3 all of them"), implemented + deployed the three levers from the 19:10 analysis:
+
+**#1 Reward rebalance (sf_headless_env.py) — make passivity unsafe, kills dominate:**
+- REMOVED the `+0.0005/tick` armed-trickle — it literally paid the agent to CAMP holding a
+  gun, the direct incentive behind both the scripted argmax collapse and the self-play no-arm
+  basin. Kept the one-time `+0.15` acquisition bonus.
+- KILL up-weighted: base 1.0→2.0, fast-kill 0.5→1.0 (a win is now +2.0..+3.0). Vs a strong
+  opp the dense HP-trade nets negative while fighting, so the only way "engage to win" beats
+  "do nothing" is a terminal kill big enough to overcome it. Pairs with a BEATABLE opp.
+- Chip 0.05→0.03 (down-weight the farmable per-tick floor). No per-step idle penalty (the
+  known suicide trap).
+
+**#2 Weakened scripted bot (SFHeadlessHost.cs DriveScriptedBots) — a BEATABLE opponent:**
+- Added `SFGYM_BOT_AGGRO` (0..1, <1 throttles fire+approach), `SFGYM_BOT_AIM_NOISE` (rad,
+  rotates aim → misses), `SFGYM_BOT_REACTION` (s, re-serves last frame → laggy). Defaults
+  (1.0/0/0) are EXACT no-ops; applied AFTER the RlControlledSlots guard so they touch ONLY
+  the scripted opp slot (never the learner or self-play); void-veto stays outside gating
+  (hazard safety preserved). Built clean (0 err), DLL backed up + deployed. Subagent-drafted,
+  reviewed + applied by hand. Persisted via fleet.sh (writes the knobs into run/fleet.env)
+  so watchdog restarts keep them. train_supervisor sets AGGRO=0.4/AIM=0.3/REACT=0.15 for
+  opp_mode=scripted (override by exporting the vars).
+
+**#3 Corrected eval gate (eval_checkpoint.py + run_eval.sh + env info) — interpretable:**
+- `--slot-swap` (half eps each slot, averaged) removes the slot-0/1 spawn bias; stochastic by
+  default (both sides sample, matching training); selfplay-only swap. Added low-variance
+  secondary metrics to env info (`opp_dead`,`self_dead`,`hp_diff`) → eval prints
+  `score = opp_died - self_died` (symmetric → 0 for a self-mirror) which moves long before the
+  noisy win. run_eval: selfplay→GATE(stochastic,slot-swap), other modes→deterministic
+  diagnostic; `SF_EVAL_DET=1` forces argmax (collapse check). CALIBRATION CAVEAT: a fall-prone
+  policy DRAWS a lot (both fall) so even slot-swapped WIN compresses well below 0.5 (self-mirror
+  win ~0.10, not 0.50) — the SCORE metric is the clean ~0-centered one. (The eval instance still
+  wedges ~10-25 eps; score is in the per-5-ep partial so a wedged run still yields it.)
+
+**NEW TRAINING (live 20:26):** opp_mode=scripted, WEAKENED bot (Config-log verified
+`BotAggro=0.40 BotReaction=0.15s BotAimNoise=0.30`) on slot 1, NEW reward, resumed from the
+clean best **1879996**, HP25/Ice11. Goal: a beatable opponent + win-dominant reward should
+finally produce a measurable WIN climb (break passivity). REVERT to self-play: `touch
+run/USE_SELFPLAY` + restart. NEXT: babysit; eval vs the weakened bot (`run_eval.sh 20 "" scripted`
+→ deterministic diagnostic + score) ~every 60-90k steps — if win climbs, ramp AGGRO toward 1.0
+(curriculum) then →HP100 →selfplay; if it collapses again, the reward needs more work. Once a
+candidate clearly beats the frozen selfplay opp on the corrected `--slot-swap` gate (score>0),
+resume the selfplay ladder with the fixed gate.

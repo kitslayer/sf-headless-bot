@@ -657,7 +657,7 @@ class SFHeadlessEnv(gym.Env):
         self_dmg = max(0.0, self._prev_self_hp - self_hp)
         reward = (1.5 * opp_dmg - self_dmg) / 100.0
         if opp_dmg > 0.0:
-            reward += 0.05
+            reward += 0.03   # 2026-06-15: 0.05→0.03 — down-weight farmable chip vs the kill
             self._hit_ticks += 1
         self._prev_self_hp = self_hp
         self._prev_opp_hp = opp_hp
@@ -665,18 +665,17 @@ class SFHeadlessEnv(gym.Env):
         # damage credit chain is seconds long; this densifies it. Not
         # exploitable: re-arming requires having lost the gun (emptied = it
         # auto-drops), which already costs time and forgone damage.
-        # 2026-06-11 retune: 0.05 → 0.15, plus +0.0005/tick while armed (max
-        # +0.3 over a full 600-step episode). 59k steps of hit-shaping doubled
-        # hits/ep but win stayed flat at ~0.07 — arms ~0.25/ep showed gun
-        # ACQUISITION was the binding constraint, not per-hit credit. Camping
-        # with a gun (trickle ~0.3) stays strictly dominated by hunting with
-        # it (hits + 1.5x damage + kill 1.0-1.5).
+        # 2026-06-11: +0.15 one-time on unarmed→armed. The +0.0005/tick
+        # armed-trickle that used to follow was REMOVED 2026-06-15: it paid the
+        # agent to CAMP holding a gun, and vs an opponent it can't beat that made
+        # "arm + do nothing" locally optimal — a direct contributor to BOTH the
+        # scripted argmax passive collapse and the self-play no-arm basin. Keep
+        # ONLY the acquisition bonus (arming is the binding constraint); WINNING,
+        # not holding, is what pays now (see the up-weighted kill below).
         armed_now = bool(me.get("armed", False)) if me else self._prev_armed
         if armed_now and not self._prev_armed:
             reward += 0.15
             self._arm_count += 1
-        if armed_now:
-            reward += 0.0005
         self._prev_armed = armed_now
 
         terminated = False
@@ -692,11 +691,15 @@ class SFHeadlessEnv(gym.Env):
         self_dead = me is not None and ((not me["alive"]) or self_hp <= 0)
         opp_dead = op is not None and ((not op["alive"]) or opp_hp <= 0)
         if opp_dead and not self_dead:
-            #   * fast-kill bonus: +1.0 base, plus up to +0.5 decaying
-            #     linearly over the 30s cap — time pressure toward hunting
-            #     WITHOUT a per-step idle penalty (which would make suicide
-            #     cheaper than waiting and inflate fell_mean).
-            reward += 1.0 + 0.5 * max(0.0, 1.0 - self._steps / self.max_steps)
+            #   * KILL up-weighted 2026-06-15: base 1.0→2.0, fast-kill 0.5→1.0
+            #     (a win is now +2.0..+3.0). The win must DOMINATE the per-step
+            #     terms: vs a strong opp the dense HP-trade nets NEGATIVE while
+            #     fighting, so "engage to win" only beats "do nothing" if the
+            #     terminal kill is big enough to overcome that — the core
+            #     anti-passivity fix (pairs with a BEATABLE opp; against an
+            #     unbeatable one even this can't make engaging positive-EV).
+            #     Still NO per-step idle penalty (suicide-cheaper-than-waiting trap).
+            reward += 2.0 + 1.0 * max(0.0, 1.0 - self._steps / self.max_steps)
             terminated = True
         elif self_dead:
             # Death penalty history: -1.0 (orig) -> -0.5 (2026-06-06, fall
@@ -739,7 +742,14 @@ class SFHeadlessEnv(gym.Env):
                 # hits = damaging ticks this episode — the dense precursor to
                 # win_mean; shows whether the kill-biased shaping is working
                 # long before kills become common.
-                "hits": float(self._hit_ticks)}
+                "hits": float(self._hit_ticks),
+                # 2026-06-15 low-variance gate metrics (read by eval_checkpoint):
+                # opp_dead/self_dead split the binary win into a graded score
+                # (opp_died - self_died); hp_diff (self - opp end HP) moves long
+                # before win does, so it exposes passivity early (both ~0).
+                "opp_dead": 1.0 if opp_dead else 0.0,
+                "self_dead": 1.0 if self_dead else 0.0,
+                "hp_diff": float(self_hp - opp_hp)}
         return obs, float(reward), terminated, truncated, info
 
     def close(self):

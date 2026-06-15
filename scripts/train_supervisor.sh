@@ -25,9 +25,17 @@ cd "$BOTDIR"
 # REVERT to self-play: `touch run/USE_SELFPLAY` then restart this supervisor (or
 # restore run/fleet.env.selfplay-bak + run/SELFPLAY_CKPT.selfplay-bak).
 if [ -f "$BOTDIR/run/USE_SELFPLAY" ]; then
-  OPP_MODE=selfplay; FLEET_RL_SLOTS=0,1
+  OPP_MODE=selfplay; FLEET_RL_SLOTS=0,1; FLEET_BOT_DIFF=""
 else
   OPP_MODE=scripted; FLEET_RL_SLOTS=0
+  # WEAKENED scripted bot (2026-06-15): a FULL-strength bot is unbeatable for the
+  # current policy and collapsed it to passivity (arms->0). Start weak so the
+  # up-weighted-kill reward has a LEARNABLE target; ramp toward 1.0 as the
+  # deterministic win climbs. Knobs (added to the headless DriveScriptedBots C#):
+  # AGGRO<1 fires/approaches less, AIM_NOISE>0 misses, REACTION>0 lags. fleet.sh
+  # persists these into run/fleet.env so watchdog restarts keep them. Override by
+  # exporting SFGYM_BOT_AGGRO / _AIM_NOISE / _REACTION before launching.
+  FLEET_BOT_DIFF="SFGYM_BOT_AGGRO=${SFGYM_BOT_AGGRO:-0.4} SFGYM_BOT_AIM_NOISE=${SFGYM_BOT_AIM_NOISE:-0.3} SFGYM_BOT_REACTION=${SFGYM_BOT_REACTION:-0.15}"
 fi
 echo "[train-sup] start $(date) instances=$INSTANCES steps=$STEPS opp_mode=$OPP_MODE rl_slots=$FLEET_RL_SLOTS"
 
@@ -53,7 +61,7 @@ while true; do
   live=$(ss -ulpn 2>/dev/null | grep -oE ":134[1-9]" | sort -u | wc -l)
   if [ "$live" -lt "$INSTANCES" ]; then
     echo "[train-sup $(date '+%H:%M:%S')] only $live/$INSTANCES bridges up — (re)starting RL fleet"
-    SFGYM_RL_SLOTS="$FLEET_RL_SLOTS" bash scripts/fleet.sh start "$INSTANCES" >> logs/fleet-start.log 2>&1
+    env $FLEET_BOT_DIFF SFGYM_RL_SLOTS="$FLEET_RL_SLOTS" bash scripts/fleet.sh start "$INSTANCES" >> logs/fleet-start.log 2>&1
     sleep 60   # let instances boot + reach combat
   fi
   # Ensure the trainer is running.

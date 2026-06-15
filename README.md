@@ -60,16 +60,19 @@ the single source of truth the instances source), `scripts/watchdog.sh`
    then `KickstartPPO` resumes with a decaying BC anchor + critic warmup.
    Recollect demos whenever the opponent stage changes.
 
-**Status (2026-06-15 19:10):** STAGE — **SELF-PLAY @ 1879996** (`opp_mode="selfplay"` vs frozen
-1759996), HP25/Ice11 — REVERTED here after a scripted-stage experiment COLLAPSED the policy
-(full arc in `TRAINING_LOG.md` **2026-06-15 11:40 / 14:55 / 19:10**). What happened: a CRITICAL
-eval-gate bug was found+fixed; then the planned scripted rung (`opp_mode=scripted`) was tried,
-but over ~215k steps the DETERMINISTIC policy collapsed to passive (scripted-eval arms
-.12→.10→**.00**, win→**0.00** all 20 eps) while ROLLOUT masked it at win ~0.10 — so reverted to
-the pre-scripted best policy 1879996 (27 collapsed ckpts → `models/archive-scripted-collapse/`).
-**BOTH self-play (stuck mutual-fall basin) and full-scripted (collapses) plateau ⇒ the
-bottleneck is REWARD/DIFFICULTY (user tuning domain), not opponent type.** Re-try scripted:
-`rm run/USE_SELFPLAY` + restart supervisor.
+**Status (2026-06-15 20:25):** STAGE — **SCRIPTED vs a WEAKENED bot** (`opp_mode="scripted"`,
+`SFGYM_BOT_AGGRO=0.4 / AIM_NOISE=0.3 / REACTION=0.15`) + a REBALANCED reward, resumed from the
+clean best **1879996**, HP25/Ice11. The fix for the plateau both self-play and full-scripted hit
+(full arc in `TRAINING_LOG.md` **2026-06-15 11:40 → 20:25**). Three changes shipped together:
+**(1) reward** — removed the farmable armed-trickle (it paid the agent to CAMP) + up-weighted the
+KILL to +2..3 so winning dominates the per-step terms (passivity no longer safe); **(2) a weakened
+scripted bot** — new C# difficulty knobs in `DriveScriptedBots` make the opponent BEATABLE (a
+full-strength bot collapsed the argmax policy to passive: scripted-eval arms .12→.10→.00,
+win→0.00); **(3) a corrected eval gate** — `--slot-swap` + stochastic + a low-variance `score`
+(opp_died−self_died) so the selfplay mirror is interpretable (the OLD gate secretly measured a
+hold-dummy — see below). GOAL: a beatable opponent + win-dominant reward → a real WIN climb; then
+ramp AGGRO→1.0, →HP100, →selfplay (gated by the fixed `--slot-swap` eval). Revert to self-play:
+`touch run/USE_SELFPLAY` + restart. Collapsed full-scripted ckpts in `models/archive-scripted-collapse/`.
 **⚠ GATE BUG: every "deterministic win vs frozen opp" number in the self-play history
 below was actually measured vs a STATIONARY hold-dummy** — `run_eval.sh` parsed `OPP_MODE`
 but never forwarded `--opp-mode`, so `eval_checkpoint.py` always defaulted to `opp_mode=hold`.

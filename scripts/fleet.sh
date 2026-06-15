@@ -53,6 +53,7 @@ case "$cmd" in
     _c_nmd="${SF_NEXT_MATCH_DELAY:-}"
     _c_vy="${SF_VOID_Y:-}";         _c_vz="${SF_VOID_Z:-}"
     _c_hp="${SF_STAGE_HP:-}"
+    _c_aggro="${SFGYM_BOT_AGGRO:-}"; _c_react="${SFGYM_BOT_REACTION:-}"; _c_aim="${SFGYM_BOT_AIM_NOISE:-}"
     [ -f "$PIDDIR/fleet.env" ] && . "$PIDDIR/fleet.env"
     [ -n "$_c_bots" ]  && SFGYM_BOT_SLOTS="$_c_bots"
     [ -n "$_c_rl" ]    && SFGYM_RL_SLOTS="$_c_rl"
@@ -65,6 +66,9 @@ case "$cmd" in
     [ -n "$_c_vy" ]    && SF_VOID_Y="$_c_vy"
     [ -n "$_c_vz" ]    && SF_VOID_Z="$_c_vz"
     [ -n "$_c_hp" ]    && SF_STAGE_HP="$_c_hp"
+    [ -n "$_c_aggro" ] && SFGYM_BOT_AGGRO="$_c_aggro"
+    [ -n "$_c_react" ] && SFGYM_BOT_REACTION="$_c_react"
+    [ -n "$_c_aim" ]   && SFGYM_BOT_AIM_NOISE="$_c_aim"
     cat > "$PIDDIR/fleet.env" <<EOF
 export SFGYM_BOT_SLOTS=${SFGYM_BOT_SLOTS:-0,1}
 export SFGYM_RL_SLOTS=${SFGYM_RL_SLOTS:-}
@@ -77,6 +81,9 @@ export SF_NEXT_MATCH_DELAY=${SF_NEXT_MATCH_DELAY:-}
 export SF_VOID_Y=${SF_VOID_Y:-}
 export SF_VOID_Z=${SF_VOID_Z:-}
 export SF_STAGE_HP=${SF_STAGE_HP:-}
+export SFGYM_BOT_AGGRO=${SFGYM_BOT_AGGRO:-}
+export SFGYM_BOT_REACTION=${SFGYM_BOT_REACTION:-}
+export SFGYM_BOT_AIM_NOISE=${SFGYM_BOT_AIM_NOISE:-}
 EOF
     echo "[fleet] wrote $PIDDIR/fleet.env (SF_FIXED_MAP=${SF_FIXED_MAP:-<none>} RL_SLOTS=${SFGYM_RL_SLOTS:-<none>} TIMESCALE=${SF_TIMESCALE:-1}, restart-safe)"
     for i in $(seq 0 $((N-1))); do

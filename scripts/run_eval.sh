@@ -66,8 +66,18 @@ done
 if [ "$ready" = 1 ]; then
   sleep 35   # reach combat + spawn rigs
   [ -z "$CKPT" ] && CKPT=$(ls -t models/ppo_headless_*_steps.zip | head -1)
-  echo "[eval] DETERMINISTIC $EPS eps on $(basename "$CKPT") $(date '+%H:%M:%S')" | tee -a "$LOG"
-  timeout 480 "$VENV" python/eval_checkpoint.py "$CKPT" --bridge 1349 --episodes "$EPS" --deterministic --opp-mode "$OPP" 2>&1 | tee -a "$LOG"
+  # Eval mode (2026-06-15): selfplay => the GATE (stochastic + balanced SLOT-SWAP,
+  # so an even match reads ~0.50, not the asymmetric ~0.15). hold/patrol/scripted =>
+  # DETERMINISTIC single-slot diagnostic (argmax — catches passive collapse, e.g.
+  # arms->0). Force deterministic even for selfplay with SF_EVAL_DET=1.
+  EVAL_FLAGS="--opp-mode $OPP"
+  if [ "$OPP" = "selfplay" ] && [ -z "${SF_EVAL_DET:-}" ]; then
+    EVAL_FLAGS="$EVAL_FLAGS --slot-swap"; MODE_LBL="GATE(stochastic,slot-swap)"
+  else
+    EVAL_FLAGS="$EVAL_FLAGS --deterministic"; MODE_LBL="DETERMINISTIC"
+  fi
+  echo "[eval] $MODE_LBL $EPS eps on $(basename "$CKPT") $(date '+%H:%M:%S')" | tee -a "$LOG"
+  timeout 480 "$VENV" python/eval_checkpoint.py "$CKPT" --bridge 1349 --episodes "$EPS" $EVAL_FLAGS 2>&1 | tee -a "$LOG"
 else
   echo "[eval] bridge 1349 never came up — aborting" | tee -a "$LOG"
 fi

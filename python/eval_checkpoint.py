@@ -1,22 +1,35 @@
-"""Deterministic (and stochastic) evaluation of a trained checkpoint.
+"""Deterministic / stochastic evaluation of a trained checkpoint.
 
 The trainer's rollout win_mean is measured on the STOCHASTIC exploration
 policy and swings ±0.06 from instance churn — useless for a real verdict
 or a curriculum gate. This runs a checkpoint on a DEDICATED game instance
 (its own bridge, NOT the training fleet's) for N full episodes and reports
-the true win/fell/length/arms/hits, with --deterministic selecting argmax
-vs sampled actions. The whole BC-transfer question (is the policy good but
-sample-noisy, or genuinely stuck?) is answered by running this once with
-and once without --deterministic.
+the true win/fell/length/arms/hits.
 
-Win/fell come from info[] (the env's own definition), NOT the reward sign —
-under the dense kill-biased shaping a non-win episode easily clears any
-reward threshold, so the old reward-sign classifier over-counts wins.
+GATE (2026-06-15, the corrected interpretable gate): the SELF-PLAY mirror
+harness is asymmetric — the evaluated side at argmax vs a SAMPLED opp on a
+single fixed slot makes an EVEN match score only ~0.15, not 0.50 (so the old
+0.65 refresh bar was unreachable on any fair mirror). The fixes here:
+  * --slot-swap : run half the episodes with the learner on slot 0 and half on
+    slot 1, then average. Removes the slot-0/1 spawn asymmetry → an even match
+    (a policy vs ITSELF) reads ~0.50. selfplay-only (in other modes the HOST
+    drives the non-RL slot, so the learner can't take slot 1).
+  * stochastic by default for the gate (drop --deterministic) so BOTH sides
+    sample, matching what training optimizes; --deterministic stays for the
+    argmax DIAGNOSTIC (catches argmax mode-collapse, e.g. arms->0).
+  * secondary low-variance metrics: score = mean(opp_died) - mean(self_died)
+    and end HP-diff. Every episode contributes a graded value (not a mostly-0
+    binary), so these move long before the noisy win rate and expose passivity
+    (both ~0 = nobody's killing anybody). Read from env info (added 2026-06-15).
 
-Usage (point at an idle bridge, e.g. a 5th instance on 1349):
-    python eval_checkpoint.py --bridge 1349 --episodes 40 --deterministic
-    python eval_checkpoint.py --bridge 1349 --episodes 40            # stochastic
-    python eval_checkpoint.py models/BC_INIT_816000.zip --bridge 1349 --deterministic
+CALIBRATION: run `--opp-mode selfplay --slot-swap` of the frozen opp vs ITSELF
+once per session; it MUST read ~0.50. If it drifts, something asymmetric
+regressed. REFRESH BAR on this scale: promote when a candidate beats the frozen
+opp at >= ~0.58 (two consecutive gates, or one 2N>=40 run).
+
+Usage:
+    python eval_checkpoint.py --bridge 1349 --episodes 24 --opp-mode selfplay --slot-swap
+    python eval_checkpoint.py --bridge 1349 --episodes 20 --opp-mode scripted --deterministic
 """
 from __future__ import annotations
 
@@ -46,6 +59,49 @@ def latest_checkpoint():
     return best
 
 
+def eval_pass(model, vn, bridge, my_slot, opp_slot, opp_mode, n, max_steps, deterministic):
+    """Run n episodes with the learner on my_slot; return aggregate dict."""
+    def _thunk():
+        return SFHeadlessEnv(bridge_port=bridge, my_slot=my_slot, opp_slot=opp_slot,
+                             poll_hz=20.0, max_steps=max_steps, opp_mode=opp_mode)
+    venv = DummyVecEnv([_thunk])
+    if vn and os.path.exists(vn):
+        venv = VecNormalize.load(vn, venv)
+        venv.training = False          # freeze stats, don't update during eval
+        venv.norm_reward = False
+    wins = fell = oppdied = selfdied = 0
+    lengths, arms, hits, hpdiff = [], [], [], []
+    obs = venv.reset()
+    ep_len = 0
+    done_count = 0
+    while done_count < n:
+        action, _ = model.predict(obs, deterministic=deterministic)
+        obs, _, dones, infos = venv.step(action)
+        ep_len += 1
+        if dones[0]:
+            info = infos[0]
+            wins += int(float(info.get("win", 0.0)) >= 0.5)
+            fell += int(float(info.get("fell", 0.0)) >= 0.5)
+            oppdied += int(float(info.get("opp_dead", 0.0)) >= 0.5)
+            selfdied += int(float(info.get("self_dead", 0.0)) >= 0.5)
+            arms.append(float(info.get("arms", 0.0)))
+            hits.append(float(info.get("hits", 0.0)))
+            hpdiff.append(float(info.get("hp_diff", 0.0)))
+            lengths.append(ep_len)
+            ep_len = 0
+            done_count += 1
+            if done_count % 5 == 0:
+                # include score (opp_died-self_died) so a wedged run (the eval
+                # instance wedges ~10-25 eps) still surfaces the low-variance metric.
+                print(f"[eval] slot{my_slot} {done_count}/{n} "
+                      f"win={wins/done_count:.3f} score={(oppdied-selfdied)/done_count:+.2f} "
+                      f"fell={fell/done_count:.3f} arms={np.mean(arms):.2f} "
+                      f"hits={np.mean(hits):.2f} len={np.mean(lengths):.0f}", flush=True)
+    venv.close()
+    return dict(wins=wins, fell=fell, oppdied=oppdied, selfdied=selfdied, n=n,
+                arms=arms, hits=hits, hpdiff=hpdiff, lengths=lengths)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("checkpoint", nargs="?", default="",
@@ -54,11 +110,13 @@ def main():
     ap.add_argument("--episodes", type=int, default=40)
     ap.add_argument("--vecnormalize", default="",
                     help="VecNormalize .pkl (default: matched by step number)")
-    ap.add_argument("--deterministic", action="store_true", help="argmax actions (default: sampled)")
+    ap.add_argument("--deterministic", action="store_true",
+                    help="argmax DIAGNOSTIC (default: sampled — the gate uses sampled)")
+    ap.add_argument("--slot-swap", action="store_true",
+                    help="half eps on each slot + average (even match => ~0.5; selfplay only)")
     ap.add_argument("--max-steps", type=int, default=600)
     ap.add_argument("--opp-mode", default="hold", choices=["hold", "patrol", "scripted", "selfplay"],
-                    help="opponent the eval faces; use 'patrol' for a stage-1-faithful "
-                         "number (must match how the checkpoint was trained)")
+                    help="opponent the eval faces; must match how the checkpoint trained")
     args = ap.parse_args()
 
     ckpt = args.checkpoint or latest_checkpoint()
@@ -68,61 +126,54 @@ def main():
         m = re.search(r"_(\d+)_steps\.zip$", ckpt)
         if m:
             vn = os.path.join(MODELS, f"ppo_headless_vecnormalize_{m.group(1)}_steps.pkl")
-    mode = "DETERMINISTIC" if args.deterministic else "stochastic"
-    print(f"[eval] {mode} | ckpt={os.path.basename(ckpt)} | bridge={args.bridge} | "
-          f"eps={args.episodes}", flush=True)
-
-    def _thunk():
-        return SFHeadlessEnv(bridge_port=args.bridge, my_slot=0, opp_slot=1,
-                             poll_hz=20.0, max_steps=args.max_steps, opp_mode=args.opp_mode)
-    venv = DummyVecEnv([_thunk])
-    if vn and os.path.exists(vn):
-        venv = VecNormalize.load(vn, venv)
-        venv.training = False          # freeze stats, don't update during eval
-        venv.norm_reward = False
-        print(f"[eval] loaded vecnormalize {os.path.basename(vn)}", flush=True)
-    else:
+    if vn and not os.path.exists(vn):
         print(f"[eval] WARNING: no vecnormalize stats ({vn}) — obs unnormalized!", flush=True)
+        vn = ""
+
+    if args.slot_swap and args.opp_mode != "selfplay":
+        print("[eval] NOTE: --slot-swap is selfplay-only (host drives the non-RL slot in "
+              "hold/patrol/scripted) — running single-slot", flush=True)
+        args.slot_swap = False
+
+    mode = "DETERMINISTIC" if args.deterministic else "stochastic"
+    gate = "SLOT-SWAP" if args.slot_swap else "single-slot"
+    print(f"[eval] {mode} {gate} | ckpt={os.path.basename(ckpt)} | bridge={args.bridge} | "
+          f"eps={args.episodes} | opp={args.opp_mode}", flush=True)
 
     model = PPO.load(ckpt, device="cpu")
 
-    wins = fell = 0
-    lengths, arms, hits = [], [], []
-    obs = venv.reset()
-    ep_len = 0
-    done_count = 0
-    while done_count < args.episodes:
-        action, _ = model.predict(obs, deterministic=args.deterministic)
-        obs, _, dones, infos = venv.step(action)
-        ep_len += 1
-        if dones[0]:
-            info = infos[0]
-            wins += int(float(info.get("win", 0.0)) >= 0.5)
-            fell += int(float(info.get("fell", 0.0)) >= 0.5)
-            arms.append(float(info.get("arms", 0.0)))
-            hits.append(float(info.get("hits", 0.0)))
-            lengths.append(ep_len)
-            ep_len = 0
-            done_count += 1
-            if done_count % 5 == 0:
-                # Include running arms/hits/len so a partial run (the eval
-                # instance tends to wedge ~20 eps) still surfaces the
-                # armed-vs-inefficient breakdown — the final summary block
-                # never prints if the process is Killed mid-run.
-                print(f"[eval] {done_count}/{args.episodes} "
-                      f"win={wins/done_count:.3f} fell={fell/done_count:.3f} "
-                      f"arms={np.mean(arms):.2f} hits={np.mean(hits):.2f} "
-                      f"len={np.mean(lengths):.0f}", flush=True)
-    venv.close()
-    n = args.episodes
-    print(f"\n===== EVAL RESULT ({mode}) =====")
+    if args.slot_swap:
+        n0 = args.episodes // 2
+        passes = [
+            eval_pass(model, vn, args.bridge, 0, 1, args.opp_mode, n0, args.max_steps, args.deterministic),
+            eval_pass(model, vn, args.bridge, 1, 0, args.opp_mode, args.episodes - n0, args.max_steps, args.deterministic),
+        ]
+    else:
+        passes = [eval_pass(model, vn, args.bridge, 0, 1, args.opp_mode,
+                            args.episodes, args.max_steps, args.deterministic)]
+
+    W = sum(p["wins"] for p in passes); F = sum(p["fell"] for p in passes)
+    OD = sum(p["oppdied"] for p in passes); SD = sum(p["selfdied"] for p in passes)
+    N = sum(p["n"] for p in passes)
+    A = [x for p in passes for x in p["arms"]]
+    H = [x for p in passes for x in p["hits"]]
+    HD = [x for p in passes for x in p["hpdiff"]]
+    L = [x for p in passes for x in p["lengths"]]
+    print(f"\n===== EVAL RESULT ({mode} {gate}) =====")
     print(f"checkpoint : {os.path.basename(ckpt)}")
-    print(f"episodes   : {n}")
-    print(f"WIN rate   : {wins/n:.3f}  ({wins}/{n})")
-    print(f"fell rate  : {fell/n:.3f}  ({fell}/{n})")
-    print(f"ep length  : {np.mean(lengths):.0f} steps mean / {np.median(lengths):.0f} median")
-    print(f"arms/ep    : {np.mean(arms):.2f}")
-    print(f"hits/ep    : {np.mean(hits):.2f}")
+    print(f"episodes   : {N}")
+    print(f"WIN rate   : {W/N:.3f}  ({W}/{N})")
+    print(f"fell rate  : {F/N:.3f}  ({F}/{N})")
+    print(f"score      : {(OD-SD)/N:+.3f}  (opp_died {OD/N:.2f} - self_died {SD/N:.2f})  [low-var]")
+    print(f"end HP diff: {np.mean(HD) if HD else 0.0:+.1f}  (self - opp, mean)")
+    print(f"ep length  : {np.mean(L):.0f} steps mean / {np.median(L):.0f} median")
+    print(f"arms/ep    : {np.mean(A):.2f}")
+    print(f"hits/ep    : {np.mean(H):.2f}")
+    if args.slot_swap:
+        for i, p in enumerate(passes):
+            sl = 0 if i == 0 else 1
+            print(f"  slot{sl}: win {p['wins']}/{p['n']}={p['wins']/max(1,p['n']):.3f} "
+                  f"fell={p['fell']/max(1,p['n']):.2f}")
 
 
 if __name__ == "__main__":

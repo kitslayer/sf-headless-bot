@@ -101,6 +101,17 @@ namespace SFHeadlessHost
         // Stage HP (SF_STAGE_HP env, 1-100; default 100 = DSF comp). Stock
         // match option; curriculum shrinks the kill task at low stages.
         internal static int StageHP = 100;
+        // Scripted-bot difficulty knobs (curriculum: weaken the teacher so a
+        // full-strength bot can't collapse the RL policy to passivity). All
+        // default to CURRENT full-strength behavior (exact no-ops). Only affect
+        // DriveScriptedBots (the opp slot in opp_mode=scripted); self-play
+        // (frozen PPO) and RL-controlled slots are untouched.
+        //   SFGYM_BOT_AGGRO   (0..1, default 1.0): <1 throttles fire + approach
+        //   SFGYM_BOT_REACTION(secs, default 0.0): decision latency (laggier)
+        //   SFGYM_BOT_AIM_NOISE(rad, default 0.0): rotate aim by a random angle
+        internal static float BotAggro = 1.0f;
+        internal static float BotReactionSec = 0.0f;
+        internal static float BotAimNoise = 0.0f;
         private float _roundAdvanceBlockedUntil = -1f;
         private bool _roundAdvanceQueuedAfterMapLoad;
         private readonly HashSet<int> _deathSlotsHandled = new HashSet<int>();
@@ -4870,6 +4881,11 @@ namespace SFHeadlessHost
         private static readonly List<Vector3> _tWpCache = new List<Vector3>();
         private static int _tWpCacheTick = -999;
         private static float _tVoidZ = 17f;
+        // Reaction-latency cache (SFGYM_BOT_REACTION): last InputFrame + the
+        // realtime it was committed, per slot. With latency>0 we re-serve the
+        // cached frame until the window elapses (laggier decisions).
+        private static readonly Dictionary<int, InputFrame> _botReactLast = new Dictionary<int, InputFrame>();
+        private static readonly Dictionary<int, float> _botReactAt = new Dictionary<int, float>();
         private void DriveScriptedBots()
         {
             if (!_botScriptedDriveActive || AutoSpawnBotSlots == null || AutoSpawnBotSlots.Count == 0) return;
@@ -5002,6 +5018,19 @@ namespace SFHeadlessHost
                     // SlotInputs via setBotAction; the scripted driver must not
                     // overwrite those each tick.
                     if (RlControlledSlots.Contains(slot)) continue;
+                    // Reaction latency (SFGYM_BOT_REACTION): within the window,
+                    // re-serve the last committed frame instead of recomputing.
+                    if (BotReactionSec > 0f)
+                    {
+                        float nowR = Time.realtimeSinceStartup;
+                        if (_botReactAt.TryGetValue(slot, out var lastAt)
+                            && (nowR - lastAt) < BotReactionSec
+                            && _botReactLast.TryGetValue(slot, out var heldFrame))
+                        {
+                            SlotInputs[slot] = heldFrame;
+                            continue;
+                        }
+                    }
                     // armed?
                     bool armed = false;
                     try
@@ -5062,6 +5091,13 @@ namespace SFHeadlessHost
                         if (stickX > 0f && me.z < -softM) stickX = 0f;
                         if (stickX < 0f && me.z > softM) stickX = 0f;
                     }
+                    // Aggro<1: drop a fraction of ENGAGE movement frames (weaker
+                    // bot is more passive). Skipped while retreating and while in
+                    // either void band so safety/spacing is preserved. Default 1.0=no-op.
+                    if (BotAggro < 1f && !retreat
+                        && me.z > -softM && me.z < softM
+                        && UnityEngine.Random.value > BotAggro)
+                        stickX = 0f;
                     // jump: target clearly above, or cadence nudge when stuck on
                     // a lip while wanting to move.
                     bool jump = (tdy > 1.2f && Mathf.Abs(tdz) < 8.0f && (_botDriveTickCounter % 25) == 0)
@@ -5075,6 +5111,10 @@ namespace SFHeadlessHost
                         fire = dist < 18f && Mathf.Abs(dy) < 7f && (_botDriveTickCounter % 3) != 0;
                     else
                         fire = (_botDriveTickCounter % 7) == 0 && Mathf.Abs(dz) < 2.5f;
+                    // Aggro<1: probabilistically suppress fire frames (weaker bot
+                    // shoots less). Default 1.0 leaves `fire` untouched.
+                    if (fire && BotAggro < 1f && UnityEngine.Random.value > BotAggro)
+                        fire = false;
                     if (_botDriveTickCounter % 180 == 0)
                         Log.LogInfo($"[bot-drive] slot{slot} me=({me.y:F1},{me.z:F1}) opp dz={dz:F2} dist={dist:F1} armed={armed} wps={_tWpCache.Count} stickX={stickX:F1} fire={fire}");
                     // aim at the opponent — same convention as the RL env's
@@ -5083,10 +5123,28 @@ namespace SFHeadlessHost
                     var inp = new InputFrame();
                     inp.StickX = stickX;
                     inp.StickY = 0f;
-                    inp.AimX = (mag > 1e-3f) ? (-dz / mag) : 1.0f;
-                    inp.AimY = (mag > 1e-3f) ? (dy / mag) : 0f;
+                    float aimX = (mag > 1e-3f) ? (-dz / mag) : 1.0f;
+                    float aimY = (mag > 1e-3f) ? (dy / mag) : 0f;
+                    // Aim noise (radians): rotate the aim unit vector by a small
+                    // random angle so a weaker bot misses. Default 0.0 = perfect.
+                    if (BotAimNoise > 0f)
+                    {
+                        float ang = (UnityEngine.Random.value - UnityEngine.Random.value) * BotAimNoise;
+                        float cs = Mathf.Cos(ang), sn = Mathf.Sin(ang);
+                        float rx = aimX * cs - aimY * sn;
+                        float ry = aimX * sn + aimY * cs;
+                        aimX = rx; aimY = ry;
+                    }
+                    inp.AimX = aimX;
+                    inp.AimY = aimY;
                     inp.Buttons = (fire ? 2 : 0) | (jump ? 1 : 0);  // bit0=jump, bit1=fire
                     SlotInputs[slot] = inp;
+                    // Cache for reaction-latency re-serve on subsequent ticks.
+                    if (BotReactionSec > 0f)
+                    {
+                        _botReactLast[slot] = inp;
+                        _botReactAt[slot] = Time.realtimeSinceStartup;
+                    }
                 }
             }
             catch (Exception e) { Log.LogWarning($"[bot-drive] {e.Message}"); }
@@ -7795,6 +7853,13 @@ namespace SFHeadlessHost
             int iv;
             if (int.TryParse(Environment.GetEnvironmentVariable("SF_STAGE_HP"), out iv) && iv >= 1 && iv <= 100)
                 StageHP = iv;
+            // Scripted-bot difficulty knobs (default = current full strength).
+            if (float.TryParse(Environment.GetEnvironmentVariable("SFGYM_BOT_AGGRO"), out fv) && fv >= 0f && fv <= 1f)
+                BotAggro = fv;
+            if (float.TryParse(Environment.GetEnvironmentVariable("SFGYM_BOT_REACTION"), out fv) && fv >= 0f && fv <= 2f)
+                BotReactionSec = fv;
+            if (float.TryParse(Environment.GetEnvironmentVariable("SFGYM_BOT_AIM_NOISE"), out fv) && fv >= 0f && fv <= 1.5f)
+                BotAimNoise = fv;
 
             // SFGYM_BOT_SLOTS=0,1 → auto-spawn in-process scripted bots in those
             // player slots (0..3). Comma-separated. Empty/unset = disabled.
@@ -7832,7 +7897,7 @@ namespace SFHeadlessHost
                 }
                 botSlotStr = sb.ToString();
             }
-            Log.LogInfo($"Config: BindPort={BindPort} BridgePort={BridgePort} InitialScene={InitialScene} Verbose={Verbose} RoundEndDelay={RoundEndDelaySec:0.0}s NextMatchDelay={NextMatchDelaySec:0.0}s RoundMinPlay={RoundMinPlaySec:0.0}s PreCombatGrace={OraclePreCombatGraceSec:0.0}s TimeScale={TrainTimeScale:0.0}x AutoSpawnBotSlots={botSlotStr}");
+            Log.LogInfo($"Config: BindPort={BindPort} BridgePort={BridgePort} InitialScene={InitialScene} Verbose={Verbose} RoundEndDelay={RoundEndDelaySec:0.0}s NextMatchDelay={NextMatchDelaySec:0.0}s RoundMinPlay={RoundMinPlaySec:0.0}s PreCombatGrace={OraclePreCombatGraceSec:0.0}s TimeScale={TrainTimeScale:0.0}x AutoSpawnBotSlots={botSlotStr} BotAggro={BotAggro:0.00} BotReaction={BotReactionSec:0.00}s BotAimNoise={BotAimNoise:0.00}");
         }
 
         // Harmony postfix on NetworkSocketServer ctor. The stock ctor sets
