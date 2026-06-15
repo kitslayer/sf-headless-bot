@@ -1070,3 +1070,32 @@ TODO (eval-gate methodology, per subagent): the gate is now wired correctly but 
 asymmetric. Make it interpretable (even=~0.50): both sides STOCHASTIC, balanced
 SLOT-SWAP, a small FIXED map set, +secondary low-variance metrics (opp_died−self_died,
 end-HP-diff). Self-mirror must then read ~0.50. Refresh bar → ~0.58 (drop 0.65).
+
+## 2026-06-15 14:55 — SCRIPTED stage also PLATEAUS (no climb in ~90k steps) → bottleneck is reward/difficulty
+Three deterministic scripted evals over ~90k steps of scripted training:
+- 1879996 (pre-scripted tip): win 0.083, arms 0.12, hits 0.17
+- 1919996 (+40k): win 0.067, arms 0.13, hits 0.07
+- 1967996 (+90k): win 0.050, arms 0.10, hits 0.10
+WIN is flat-to-slightly-down (all within ±0.18 CI at n=20) and **arms is FLAT ~0.10–0.13
+(NOT collapsing)** — so it's a PLATEAU, not the pool-style passive collapse. Falls stay
+~0.00–0.04 (the scripted stage DID kill the self-play fall problem — good). Rollout
+briefly looked like decay (arms 0.14→0.05) but that was exploration noise; the
+deterministic policy is stable. So a fixed competent opponent does NOT break the plateau
+either. **CONCLUSION: both self-play (stuck mutual-fall basin) and full-strength scripted
+(stable plateau ~0.05–0.08 win) fail to climb — the bottleneck is NOT which opponent, it's
+the REWARD DESIGN + opponent DIFFICULTY (the user's tuning domain), and/or policy capacity.**
+DECISION: did NOT revert (within-CI evidence doesn't justify a disruptive fleet restart;
+deterministic policy is stable, not collapsing; best ckpt 1879996 is preserved on disk
+regardless). KEPT scripted running (low falls + arms~0.10 = behaviorally healthy hold
+state), lowered eval cadence, will revert to selfplay@1879996 ONLY if a clear DETERMINISTIC
+collapse (arms→0) appears. **For the user (tuning domain) — options to break the plateau,
+in rough order of leverage:** (1) REBALANCE reward toward decisive wins — the survival/chip
+terms make "don't engage a bot you can't beat" locally optimal; down-weight armed-trickle
++ per-tick chip, up-weight terminal KILL, so passivity isn't safe. (2) WEAKEN the scripted
+bot — but the headless `DriveScriptedBots` has NO `SFGYM_BOT_AGGRO/REACTION` knob (those
+are in `mod/StickFightGym/ScriptedBot`), so this needs new C# (a difficulty scalar on the
+host bot). (3) HP curriculum — the documented plan had scripted at HP100 with a *weakened*
+bot; current is HP25 full-strength. (4) Build the corrected slot-swap eval gate first so
+any change is measured against an interpretable (even=0.5) number, not the asymmetric ~0.15
+harness. The eval-gate FIX + this diagnosis are the night's real deliverables; the policy
+itself is plateaued pending a tuning decision.
