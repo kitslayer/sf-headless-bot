@@ -955,3 +955,14 @@ worker /proc/environ (trainer 1561910 npaths=1 -> 1695996, 2 workers).
 Ladder so far (all post-pool-revert, single-opp): #1 ->1327996 (0.80), #2 ->1487996
 (0.65), #3 ->1575996 (0.80), #4 ->1695996 (0.75). Cadence: eval ~60k, refresh when
 det win >0.65. NEXT gate ts~1.76M. Infra: 6 double-wedges today, all watchdog-healed.
+
+## 2026-06-15 02:58 — LEAGUE-REFRESH #5 (opp -> 1759996)
+Refresh #5 decision eval (learner 1759996) vs frozen 1695996: WIN 0.65 (13/20),
+arms 1.15, hits 1.50, fell 0.05. The post-refresh-#4 rollout-falls spike (peaked ~0.42)
+was EXPLORATION noise — deterministic fell is 0.05 (barely falls); the policy dominates
+combat (1.5 hits/ep) and converts 0.65 in a high-variance near-mirror. 0.65 meets the
+gate -> refresh #5: run/SELFPLAY_CKPT 1695996 -> 1759996 (.prev=1695996). Verified live
+via worker /proc/environ (trainer 279221 npaths=1 -> 1759996, 2 workers).
+Ladder (post-revert, single-opp): #1->1327996(0.80), #2->1487996(0.65), #3->1575996(0.80),
+#4->1695996(0.75), #5->1759996(0.65). Matchups tightening (~0.65-0.80) as the frozen opp
+strengthens each rung = healthy self-play; absolute skill climbing. NEXT gate ts~1.82M.
