@@ -12,7 +12,24 @@ STEPS="${2:-50000000}"
 CHECK=60
 
 cd "$BOTDIR"
-echo "[train-sup] start $(date) instances=$INSTANCES steps=$STEPS"
+
+# Curriculum-stage opponent (2026-06-15). Switched selfplay -> SCRIPTED after the
+# eval-gate bug fix (run_eval never forwarded --opp-mode, so every "deterministic
+# win vs frozen" was actually vs a stationary HOLD dummy) revealed self-play was a
+# stuck mutual-fall basin: the learner is only ~even with its own frozen ancestor
+# on a CORRECTED mirror eval (harness even-match baseline ~0.15) and arms ~0.05/ep,
+# because a frozen copy of itself never punishes not-arming. The in-plugin scripted
+# bot is a FIXED competent opponent (the planned-but-skipped dummy->patrol->SCRIPTED
+# ->selfplay stage). Scripted needs the host to drive slot 1, so the fleet launches
+# SFGYM_RL_SLOTS=0 (learner=slot0 only) and the trainer pins randomize_slot=False.
+# REVERT to self-play: `touch run/USE_SELFPLAY` then restart this supervisor (or
+# restore run/fleet.env.selfplay-bak + run/SELFPLAY_CKPT.selfplay-bak).
+if [ -f "$BOTDIR/run/USE_SELFPLAY" ]; then
+  OPP_MODE=selfplay; FLEET_RL_SLOTS=0,1
+else
+  OPP_MODE=scripted; FLEET_RL_SLOTS=0
+fi
+echo "[train-sup] start $(date) instances=$INSTANCES steps=$STEPS opp_mode=$OPP_MODE rl_slots=$FLEET_RL_SLOTS"
 
 # Stall detection (2026-06-06): a Proton instance occasionally native-crashes,
 # which can kill a SubprocVecEnv worker — the vec-env then blocks FOREVER on the
@@ -36,7 +53,7 @@ while true; do
   live=$(ss -ulpn 2>/dev/null | grep -oE ":134[1-9]" | sort -u | wc -l)
   if [ "$live" -lt "$INSTANCES" ]; then
     echo "[train-sup $(date '+%H:%M:%S')] only $live/$INSTANCES bridges up — (re)starting RL fleet"
-    SFGYM_RL_SLOTS=0,1 bash scripts/fleet.sh start "$INSTANCES" >> logs/fleet-start.log 2>&1
+    SFGYM_RL_SLOTS="$FLEET_RL_SLOTS" bash scripts/fleet.sh start "$INSTANCES" >> logs/fleet-start.log 2>&1
     sleep 60   # let instances boot + reach combat
   fi
   # Ensure the trainer is running.
@@ -64,7 +81,7 @@ while true; do
       # file is absent the env auto-loads the latest models/ checkpoint at launch.
       [ -f "$BOTDIR/run/SELFPLAY_CKPT" ] && export SF_SELFPLAY_CKPT="$(cat "$BOTDIR/run/SELFPLAY_CKPT")"
       nohup python train_headless_ppo.py --instances "$INSTANCES" --base-bridge 1341 \
-        --steps "$STEPS" --save-every 8000 --opp-mode selfplay $KS_ARGS >> "$BOTDIR/logs/train.log" 2>&1 ) &
+        --steps "$STEPS" --save-every 8000 --opp-mode "$OPP_MODE" $KS_ARGS >> "$BOTDIR/logs/train.log" 2>&1 ) &
     anchor_ts=-1; anchor_time=$(date +%s)   # reset stall tracking for the fresh trainer
     sleep 10
   else

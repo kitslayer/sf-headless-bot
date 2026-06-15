@@ -200,9 +200,15 @@ class EpInfoLogger(BaseCallback):
 
 def make_env(bridge_port: int, opp_mode: str = "hold", poll_hz: float = 20.0):
     def _thunk():
+        # randomize_slot gives spatial diversity (2026-06-13) by swapping which
+        # slot the learner drives — valid ONLY when BOTH slots are env-injectable
+        # (selfplay/hold/patrol launch with SFGYM_RL_SLOTS=0,1). In "scripted"
+        # the HOST drives slot 1 (launch SFGYM_RL_SLOTS=0), so the learner MUST
+        # stay on slot 0; randomizing it onto slot 1 would inject into the
+        # scripted-controlled slot. So pin slot 0 for scripted (2026-06-15).
         return SFHeadlessEnv(bridge_port=bridge_port, my_slot=0, opp_slot=1,
                              poll_hz=poll_hz, max_steps=600, opp_mode=opp_mode,
-                             randomize_slot=True)   # 2026-06-13: spatial diversity
+                             randomize_slot=(opp_mode != "scripted"))
     return _thunk
 
 

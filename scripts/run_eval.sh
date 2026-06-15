@@ -12,7 +12,15 @@
 #   scripts/run_eval.sh [EPISODES] [CKPT] [OPP_MODE]
 #     EPISODES  default 40
 #     CKPT      default = latest models/ppo_headless_*_steps.zip
-#     OPP_MODE  hold (default) | patrol | scripted — match how the ckpt trained
+#     OPP_MODE  selfplay (default, the LADDER GATE — needs SF_SELFPLAY_CKPT or
+#               run/SELFPLAY_CKPT) | hold | patrol | scripted. This arg is
+#               forwarded to eval_checkpoint.py as --opp-mode.
+#               !! 2026-06-15 GATE BUG: this arg was PARSED but never FORWARDED,
+#               so every "deterministic win vs frozen" was really measured vs a
+#               stationary `hold` dummy (eval_checkpoint's default), NOT the
+#               frozen opponent. All ladder/refresh decisions before this date
+#               were gated on dummy-kill rate. Fixed: arg is now forwarded and a
+#               selfplay eval HARD-FAILS if it can't resolve the frozen opp.
 #
 # NOTE on the pkill self-match trap (hit 2026-06-13): do NOT teardown with
 # `pkill -f 'launch_oracle.sh 8'` from inside a script whose own cmdline holds
@@ -23,8 +31,20 @@ BOTDIR="$HOME/stickfight-bot/sf-headless-bot"
 VENV="$HOME/stickfight-bot/.venv/bin/python"
 EPS="${1:-40}"
 CKPT="${2:-}"
-OPP="${3:-hold}"
+OPP="${3:-selfplay}"
 cd "$BOTDIR"
+# Selfplay gate: the env loads the FROZEN opponent from SF_SELFPLAY_CKPT; if it
+# isn't set/visible the env silently falls back to a STATIONARY dummy. Resolve
+# it from the pinned pointer and HARD-FAIL rather than ever measure the wrong
+# opponent (the 2026-06-15 gate bug).
+if [ "$OPP" = "selfplay" ]; then
+  [ -z "${SF_SELFPLAY_CKPT:-}" ] && [ -f "$BOTDIR/run/SELFPLAY_CKPT" ] && export SF_SELFPLAY_CKPT="$(cat "$BOTDIR/run/SELFPLAY_CKPT")"
+  if [ -z "${SF_SELFPLAY_CKPT:-}" ] || [ ! -f "${SF_SELFPLAY_CKPT}" ]; then
+    echo "[eval] FATAL: opp-mode selfplay but SF_SELFPLAY_CKPT missing (${SF_SELFPLAY_CKPT:-unset}) — refusing to eval vs a fake dummy" >&2
+    exit 2
+  fi
+  echo "[eval] selfplay frozen opp = $(basename "$SF_SELFPLAY_CKPT")"
+fi
 LOG="logs/eval_$(date +%Y%m%d_%H%M%S).log"
 ready=0
 
@@ -47,7 +67,7 @@ if [ "$ready" = 1 ]; then
   sleep 35   # reach combat + spawn rigs
   [ -z "$CKPT" ] && CKPT=$(ls -t models/ppo_headless_*_steps.zip | head -1)
   echo "[eval] DETERMINISTIC $EPS eps on $(basename "$CKPT") $(date '+%H:%M:%S')" | tee -a "$LOG"
-  timeout 480 "$VENV" python/eval_checkpoint.py "$CKPT" --bridge 1349 --episodes "$EPS" --deterministic 2>&1 | tee -a "$LOG"
+  timeout 480 "$VENV" python/eval_checkpoint.py "$CKPT" --bridge 1349 --episodes "$EPS" --deterministic --opp-mode "$OPP" 2>&1 | tee -a "$LOG"
 else
   echo "[eval] bridge 1349 never came up — aborting" | tee -a "$LOG"
 fi

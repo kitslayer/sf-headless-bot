@@ -60,8 +60,25 @@ the single source of truth the instances source), `scripts/watchdog.sh`
    then `KickstartPPO` resumes with a decaying BC anchor + critic warmup.
    Recollect demos whenever the opponent stage changes.
 
-**Status (2026-06-14):** STAGE 2 — SELF-PLAY (`opp_mode="selfplay"`), **single frozen opponent @ 1759996 — RECOVERED from a refresh-#6 regression (rollback worked; regression was stochastic, not reward)**
-(learner resumed from 1759996; re-trained from 1759996 -> recovered to 0.60 vs mirror @ts1.81M [was 0.30], combat restored; continuing the ladder, refresh #6 when >0.65). The ladder climbed
+**Status (2026-06-15):** STAGE — **SCRIPTED** (`opp_mode="scripted"`: learner slot0 vs the
+in-plugin scripted bot slot1), resumed from `1879996`, HP25/Ice11. Switched from self-play
+after a CRITICAL eval-gate bug — see `TRAINING_LOG.md` **2026-06-15 11:40**.
+**⚠ GATE BUG: every "deterministic win vs frozen opp" number in the self-play history
+below was actually measured vs a STATIONARY hold-dummy** — `run_eval.sh` parsed `OPP_MODE`
+but never forwarded `--opp-mode`, so `eval_checkpoint.py` always defaulted to `opp_mode=hold`.
+So the 5 "refreshes" were dummy-gated, NOT a verified strength ladder. FIXED (run_eval
+forwards `--opp-mode`, defaults selfplay, hard-fails if the frozen opp can't load).
+Corrected first-ever mirror evals: learner **0.10** win / 0.45 fell vs frozen 1759996;
+self-mirror (1759996 vs itself) only **0.15** (harness even-baseline ~0.15, NOT 0.50 —
+deterministic-vs-sampled, single-slot, kill-and-survive). So self-play was a stuck
+mutual-fall basin (learner ~even with its ancestor; bots barely arm ~0.05/ep or fight
+~0.5 hits/ep; falls dominate). Switched to the planned-but-skipped SCRIPTED rung (a fixed
+competent opponent that punishes not-arming). **REVERT: `touch run/USE_SELFPLAY` + restart
+supervisor** (backups `run/{fleet.env,SELFPLAY_CKPT}.selfplay-bak`).
+
+<details><summary>Pre-gate-fix self-play ladder history — ⚠ all "det win" numbers below were vs a hold-dummy, not the mirror</summary>
+
+The ladder climbed
 cleanly through 5 refreshes (1.49M→1.82M @ det win 0.65-0.80) then the 6th stage
 REGRESSED — deterministic win dropped to 0.30 vs 1759996 AND 0.35 vs the weak 1104k,
 with falls 0.05→0.30, while shaped ep_rew ROSE (reward/win divergence at high skill;
@@ -98,15 +115,23 @@ one per episode in `reset()` (uniform = fictitious self-play; hot path unchanged
 Single-entry value = single-opp (backward compatible). Deploy/grow the pool = write
 the ckpt paths into `run/SELFPLAY_CKPT` (one per line) + kill TRAINER ONLY
 (supervisor relaunches ≤60s; no supervisor change). Offline check: `python/pool_smoke.py`.
-NEXT: single-opp ladder resumes (the proven-good path). Recovery-confirm eval at
-ts~1.52M (expect combative ~0.6+ vs 1327996), then continue the ladder — refresh the
-single frozen opp to a newer snapshot once the learner reliably beats it (win >0.65).
-VERIFY any refresh via the PROCESS ENVIRON (`python` NUL-split of `/proc/PID/environ`
-for trainer+workers — count ckpt paths), NOT `train.log` (BLOCK-BUFFERED; `[selfplay]`
-lines lag & dying-trainer buffers interleave; `grep -z` misfires on multi-line values).
-ALWAYS gate on DETERMINISTIC eval — rollout win_mean HIDES argmax mode-collapse (the
-pool collapse was invisible in rollout, win 0.1-0.17, while det was 0.00). Runs at 2
-instances (frozen-opp inference CPU-heavy). Gate: `run_eval.sh N "" selfplay`.
+VERIFY any opponent switch via the PROCESS ENVIRON (`python` NUL-split of `/proc/PID/environ`
+for trainer+workers), NOT `train.log` (BLOCK-BUFFERED; `[selfplay]` lines lag & dying-trainer
+buffers interleave). The pool collapse was invisible in rollout (win 0.1-0.17, det 0.00).
+
+</details>
+
+**Eval gate (corrected 2026-06-15):** `run_eval.sh [N] [CKPT] [OPP_MODE]` now FORWARDS
+`--opp-mode` (default `selfplay`; hard-fails if the frozen opp can't load) — previously it
+parsed but dropped this arg, so every eval silently ran vs a stationary `hold` dummy. A real
+selfplay/scripted eval prints `[selfplay] loaded opponent …` / spawns the scripted bot on
+slot 1; if that's absent, the eval is bogus. Gate on DETERMINISTIC eval, but the harness is
+still asymmetric — a policy-vs-ITSELF sanity eval reads only ~**0.15** today (deterministic
+learner vs sampled opp, single slot, kill-and-survive). TODO before trusting a refresh
+number: make it interpretable (even ≈ 0.50) via stochastic-both-sides + balanced slot-swap +
+a fixed map set + low-variance secondary metrics (opp_died−self_died, end-HP-diff); then set
+the refresh bar ≈ 0.58. Scripted-stage difficulty knobs: `SFGYM_BOT_AGGRO` (default 0.7,
+lower = weaker), `SFGYM_BOT_REACTION`, `SF_STAGE_HP` (25 now; DSF comp = 100).
 
 ## Build
 

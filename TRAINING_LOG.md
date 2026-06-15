@@ -1003,3 +1003,70 @@ NO reward rebalance needed; the rollback fixed it. fell 0.20-0.25 slightly eleva
 re-eval ts~1.86M, refresh #6 when >0.65. Lesson reinforced: a single regression eval
 warranted ROLLBACK (stop bleeding) + RE-EVAL (not a blind reward change) — the re-eval
 distinguished stochastic drift from systematic, saving an unneeded reward rework.
+
+## 2026-06-15 11:40 — ⚠ EVAL-GATE BUG (all ladder evals were vs a DUMMY) → switched to SCRIPTED stage
+**The single most important finding of this run.** `scripts/run_eval.sh` parsed its
+3rd arg (`OPP_MODE`) but **never forwarded `--opp-mode` to `eval_checkpoint.py`**,
+which defaults to `opp_mode="hold"` (a STATIONARY dummy). So for the ENTIRE run,
+every "deterministic win vs frozen opp" number — incl. the 0.65–0.80 that drove all
+5 ladder refreshes, the refresh-#6 "regression," and the "recovery to 0.60" above —
+was actually **win vs a stationary hold-dummy**, NOT the frozen opponent. Confirmed 3
+ways: run_eval.sh line 50 had no `--opp-mode`; eval_checkpoint default = `hold`; and
+NO eval log ever contains the env's `[selfplay] loaded opponent` line. The historical
+ladder lineage (1104000→…→1759996) is therefore **NOT a verified strength ladder** —
+it was selected on dummy-kill rate, orthogonal to head-to-head skill.
+
+FIX (committed): run_eval.sh now forwards `--opp-mode "$OPP"`, defaults to `selfplay`,
+and HARD-FAILS if a selfplay eval can't resolve the frozen opp (never silently a dummy
+again). `launch_oracle.sh` got caller-env-wins precedence (capture overrides before
+sourcing fleet.env) so a scripted/selfplay eval can set `SFGYM_RL_SLOTS` without the
+persisted fleet config clobbering it.
+
+FIRST-EVER true mirror evals (deterministic learner vs frozen opp driving slot 1,
+HP25/Ice11, the ACTUAL training conditions):
+- learner 1863996 vs frozen 1759996: WIN **0.10**, fell **0.45**, arms 0.05, hits 0.50, len 48
+- SELF-MIRROR 1759996 vs ITSELF: WIN **0.15**, fell 0.20, arms 0.05, hits 0.30, len 56
+KEY: a policy vs ITSELF scores only ~0.15, not 0.50 — the harness is asymmetric
+(evaluated side deterministic/argmax, opp sampled; single fixed slot, no swap; random
+spawn; kill-AND-survive win def; falls+draws compress both sides). So **~0.15 is the
+"even match" baseline** and the old 0.65 refresh bar was UNREACHABLE on any fair mirror
+(which is why refreshes only ever fired off the dummy mirage). The learner is at best
+~even with its frozen ancestor. And the rollout win_mean (~0.07–0.10) AGREED with the
+mirror all along — it was NEVER ~5× entropy-understated as believed; the "0.80 self-play
+breakthrough" was a dummy artifact.
+
+ROBUST diagnosis (consistent across both mirror evals AND training rollouts): in mutual
+play the bots **barely fight** (hits ~0.5/ep), **almost never arm** (~0.05/ep vs 1.15
+vs a dummy), and episodes end fast (~56 steps) dominated by FALLS. Self-play vs frozen
+copies of itself can't fix this — both sides share the deficiency (a copy that doesn't
+grab guns never punishes you for not grabbing guns). Two subagent reviews concurred.
+
+DECISION — switch training to the SCRIPTED stage (the planned-but-skipped
+dummy→patrol→**scripted**→selfplay rung; `opp_mode=scripted` was NEVER run here because
+the fleet always used `SFGYM_RL_SLOTS=0,1`). Decisive scripted-bot eval (learner vs the
+in-plugin scripted bot, a FIXED competent opponent): WIN 0.08, fell **0.04**, arms 0.12,
+hits 0.17, len 74 — wins little, BUT falls far less (0.04 vs 0.20–0.45) and arms more
+(0.12–0.20 vs 0.05) and fights longer than vs a self-copy → healthier dynamic + a
+non-zero gradient to climb. Switched the fleet+trainer to scripted:
+- `train_supervisor.sh`: flag-toggleable opp (`OPP_MODE`/`FLEET_RL_SLOTS`); default
+  scripted (`SFGYM_RL_SLOTS=0`, slot1=scripted bot); **`touch run/USE_SELFPLAY` reverts**.
+- `train_headless_ppo.py` make_env: `randomize_slot=(opp_mode!="scripted")` — scripted
+  needs the learner pinned to slot 0 (host drives slot 1).
+- Backups for rollback: `run/fleet.env.selfplay-bak`, `run/SELFPLAY_CKPT.selfplay-bak`
+  (frozen 1759996). Selfplay checkpoints ≤1879996 preserved.
+- `.training_paused` set (OpenClaw stand-down) for the duration.
+LIVE-VERIFIED 11:49: resumed from 1879996, ts advancing (1881020→1882044), both rigs
+spawn (slot0 RL learner / slot1 scripted via TakeLocalControl), ep_len **88.8** (vs ~56
+selfplay — more sustained), win 0.07 rollout, fps 10. 1 supervisor + 1 watchdog + 1
+trainer + 2 bridges.
+
+DEVIATION + WATCH: the documented curriculum used a **weakened** scripted bot at **HP
+100**; this is running at the current stage's **HP 25 + full-strength** bot (minimal
+deviation from the live setup — didn't guess tuning values, the user's domain). If the
+learner stays crushed (~0.08, no climb) over the next hours, WEAKEN via `SFGYM_BOT_AGGRO`
+(default 0.7) / raise `SFGYM_BOT_REACTION`, and/or move toward HP 100.
+
+TODO (eval-gate methodology, per subagent): the gate is now wired correctly but still
+asymmetric. Make it interpretable (even=~0.50): both sides STOCHASTIC, balanced
+SLOT-SWAP, a small FIXED map set, +secondary low-variance metrics (opp_died−self_died,
+end-HP-diff). Self-mirror must then read ~0.50. Refresh bar → ~0.58 (drop 0.65).

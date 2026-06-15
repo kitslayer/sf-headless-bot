@@ -26,7 +26,18 @@ mkdir -p "$BOTDIR/logs" "$PFX_BASE"
 # SF_FIXED_MAP / SFGYM_RL_SLOTS / SFGYM_BOT_SLOTS as the original start. Without
 # this, a restarted instance defaults to random maps + scripted, diverging from
 # the training run and hitting hang-prone scenes (root cause of instance flapping).
+# Caller-env-wins precedence (matches fleet.sh): capture explicit caller values
+# BEFORE sourcing fleet.env, restore them after, so an explicit override (e.g. a
+# scripted eval needing SFGYM_RL_SLOTS=0) isn't clobbered by the persisted fleet
+# config. The training fleet/watchdog pass NO overrides, so they fall through to
+# fleet.env exactly as before — transparent to the running fleet.
+_ovr_rl="${SFGYM_RL_SLOTS:-}"; _ovr_bots="${SFGYM_BOT_SLOTS:-}"
+_ovr_hp="${SF_STAGE_HP:-}";    _ovr_map="${SF_FIXED_MAP:-}"
 [ -f "$BOTDIR/run/fleet.env" ] && . "$BOTDIR/run/fleet.env"
+[ -n "$_ovr_rl" ]   && SFGYM_RL_SLOTS="$_ovr_rl"
+[ -n "$_ovr_bots" ] && SFGYM_BOT_SLOTS="$_ovr_bots"
+[ -n "$_ovr_hp" ]   && SF_STAGE_HP="$_ovr_hp"
+[ -n "$_ovr_map" ]  && SF_FIXED_MAP="$_ovr_map"
 
 export STEAM_COMPAT_CLIENT_INSTALL_PATH="$STEAM"
 # ALL instances (incl. 0) run on a per-instance CLONE of the main prefix.
