@@ -937,3 +937,21 @@ refresh #3: run/SELFPLAY_CKPT 1327996 -> 1575996 (.prev=1327996). Learner resume
 NEXT ladder-decision eval ts~1.64M; refresh again when it reliably clears 0.65.
 Pool stays shelved (needs PFSP weighting). Infra steady: ~4 double-wedges today all
 watchdog-self-healed; single-bridge flaps routine.
+
+## 2026-06-14 22:20 — refresh #4 gate: NO refresh (0.60 < 0.65), keep training
+Det eval (learner 1639996) vs frozen 1575996: WIN 0.60 (12/20), arms 1.10, hits 0.95,
+fell 0.30. Below the 0.65 refresh threshold -> KEEP training vs 1575996 (matchup tightened
+vs the strong near-self, as expected near self-play equilibrium; policy healthy/combative
+but not yet dominant). WATCH fell 0.30 (up from 0.15 @1.58M — likely aggressive
+edge-exposure vs the strong opp); re-eval ts~1.70M; add edge-shaping only if fell keeps
+rising while win stalls. Rollout has been strong this stage (win 0.14-0.23, arms 0.33-0.40).
+
+## 2026-06-15 00:36 — LEAGUE-REFRESH #4 (ladder climbing steadily)
+Refresh #4 decision eval (learner 1695996) vs frozen 1575996: WIN 0.75 (15/20),
+arms 0.90, hits 1.30, fell 0.20 (the 0.30 spike @1.64M resolved through training —
+no edge-shaping needed). 0.75 >> 0.65 -> refresh #4: run/SELFPLAY_CKPT 1575996 ->
+1695996 (.prev=1575996). Learner resumes ~1702k vs near-self. Verified live via
+worker /proc/environ (trainer 1561910 npaths=1 -> 1695996, 2 workers).
+Ladder so far (all post-pool-revert, single-opp): #1 ->1327996 (0.80), #2 ->1487996
+(0.65), #3 ->1575996 (0.80), #4 ->1695996 (0.75). Cadence: eval ~60k, refresh when
+det win >0.65. NEXT gate ts~1.76M. Infra: 6 double-wedges today, all watchdog-healed.
