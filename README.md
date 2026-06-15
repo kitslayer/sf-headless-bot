@@ -60,9 +60,14 @@ the single source of truth the instances source), `scripts/watchdog.sh`
    then `KickstartPPO` resumes with a decaying BC anchor + critic warmup.
    Recollect demos whenever the opponent stage changes.
 
-**Status (2026-06-14):** STAGE 2 — SELF-PLAY (`opp_mode="selfplay"`), **single
-frozen opponent — REFRESH #5 live (frozen opp 1759996, learner ~ts1.76M, climbing)**,
-fully recovered from the POOL REVERT and steadily climbing the self-play ladder. Single-opp ladder: refresh #1
+**Status (2026-06-14):** STAGE 2 — SELF-PLAY (`opp_mode="selfplay"`), **single frozen opponent — ROLLED BACK to 1759996 after a refresh-#6 REGRESSION**
+(learner resumed from 1759996; recovery re-eval pending @ts1.81M). The ladder climbed
+cleanly through 5 refreshes (1.49M→1.82M @ det win 0.65-0.80) then the 6th stage
+REGRESSED — deterministic win dropped to 0.30 vs 1759996 AND 0.35 vs the weak 1104k,
+with falls 0.05→0.30, while shaped ep_rew ROSE (reward/win divergence at high skill;
+PPO metrics were healthy). Rolled back to known-good 1759996 (0.65 vs 1695996, fell
+0.05); did NOT raise the fall penalty (memory: that backfired into passivity). If it
+re-regresses, fix = rebalance reward toward kills (down-weight farmable chip/trickle). Single-opp ladder: refresh #1
 (opp 1104k→1327996 @ det win 0.80 @ts1.33M), #2 (→1487996 @ 0.65 @ts1.49M), #3
 (→1575996 @ 0.80 @ts1.58M), #4 (→1695996 @ 0.75 @ts1.70M), #5 (→1759996 @ 0.65 @ts1.76M). A ts1.49M forgetting-check (win vs OLD 1104k
 0.80→0.70) prompted a fictitious-self-play POOL {1104000,1327996,1487996} — but ~150k

@@ -966,3 +966,26 @@ via worker /proc/environ (trainer 279221 npaths=1 -> 1759996, 2 workers).
 Ladder (post-revert, single-opp): #1->1327996(0.80), #2->1487996(0.65), #3->1575996(0.80),
 #4->1695996(0.75), #5->1759996(0.65). Matchups tightening (~0.65-0.80) as the frozen opp
 strengthens each rung = healthy self-play; absolute skill climbing. NEXT gate ts~1.82M.
+
+## 2026-06-15 06:05 — LADDER REGRESSION at refresh-#6 gate -> ROLLBACK to 1759996
+First non-improving stage after 5 clean refreshes. Refresh-#6 decision eval (learner
+1815996) vs frozen 1759996: WIN 0.30 (6/20) — the learner started this stage AS
+1759996 and trained DOWN to 0.30 vs it. Regression-check vs the WEAK opp 1104000
+(every prior rung beat it >=0.55): WIN 0.35 (7/20), fell 0.30 -> ABSOLUTE regression,
+not matchup-specific. Smoking gun = FALLS: deterministic fell 0.05->0.30 across BOTH
+opponents; the policy drifted into a fall-prone, reward-FARMING state (ep_rew_mean
+ROSE 1.5->3.0 while win-ability + falls degraded). PPO metrics healthy (kl 0.005-0.015,
+entropy -1.6/-1.8, value_loss normal) — NOT a training crash; it's REWARD/WIN
+DIVERGENCE at high skill (dense shaping farmable without winning).
+ACTION: rolled back — archived 8 regressed ckpts (1767996..1823996) ->
+models/archive-regress-1.82M/; learner resumes from 1759996 vs frozen 1759996 (mirror
+restart). Verified trainer 4020235 npaths=1 -> 1759996, clean "loaded 1759996" log.
+**Did NOT increase the fall penalty** — memory records a prior fall-penalty bump
+BACKFIRED into passive collapse (win 0.04). Evidence-driven plan (mirrors pool revert):
+resume clean, re-eval at ts~1.81M vs 1759996 + 1104000.
+  - If recovered (fell<=0.15, vs1104k>=0.7) -> stochastic drift, continue ladder.
+  - If RE-REGRESSES (fell up, win down again) -> SYSTEMATIC reward misalignment; fix by
+    REBALANCING reward toward kills/wins (down-weight the farmable chip-damage/armed-
+    trickle terms) — NOT by raising the fall penalty. Possibly cap the ladder here
+    (~1759996 is a strong policy: 0.65 vs 1695996, fell 0.05) + harden reward before
+    pushing further.
