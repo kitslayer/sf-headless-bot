@@ -60,9 +60,16 @@ the single source of truth the instances source), `scripts/watchdog.sh`
    then `KickstartPPO` resumes with a decaying BC anchor + critic warmup.
    Recollect demos whenever the opponent stage changes.
 
-**Status (2026-06-15):** STAGE — **SCRIPTED** (`opp_mode="scripted"`: learner slot0 vs the
-in-plugin scripted bot slot1), resumed from `1879996`, HP25/Ice11. Switched from self-play
-after a CRITICAL eval-gate bug — see `TRAINING_LOG.md` **2026-06-15 11:40**.
+**Status (2026-06-15 19:10):** STAGE — **SELF-PLAY @ 1879996** (`opp_mode="selfplay"` vs frozen
+1759996), HP25/Ice11 — REVERTED here after a scripted-stage experiment COLLAPSED the policy
+(full arc in `TRAINING_LOG.md` **2026-06-15 11:40 / 14:55 / 19:10**). What happened: a CRITICAL
+eval-gate bug was found+fixed; then the planned scripted rung (`opp_mode=scripted`) was tried,
+but over ~215k steps the DETERMINISTIC policy collapsed to passive (scripted-eval arms
+.12→.10→**.00**, win→**0.00** all 20 eps) while ROLLOUT masked it at win ~0.10 — so reverted to
+the pre-scripted best policy 1879996 (27 collapsed ckpts → `models/archive-scripted-collapse/`).
+**BOTH self-play (stuck mutual-fall basin) and full-scripted (collapses) plateau ⇒ the
+bottleneck is REWARD/DIFFICULTY (user tuning domain), not opponent type.** Re-try scripted:
+`rm run/USE_SELFPLAY` + restart supervisor.
 **⚠ GATE BUG: every "deterministic win vs frozen opp" number in the self-play history
 below was actually measured vs a STATIONARY hold-dummy** — `run_eval.sh` parsed `OPP_MODE`
 but never forwarded `--opp-mode`, so `eval_checkpoint.py` always defaulted to `opp_mode=hold`.

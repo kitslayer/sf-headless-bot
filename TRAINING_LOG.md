@@ -1099,3 +1099,32 @@ bot; current is HP25 full-strength. (4) Build the corrected slot-swap eval gate 
 any change is measured against an interpretable (even=0.5) number, not the asymmetric ~0.15
 harness. The eval-gate FIX + this diagnosis are the night's real deliverables; the policy
 itself is plateaued pending a tuning decision.
+
+## 2026-06-15 19:10 — scripted DETERIORATED to argmax passive collapse → REVERTED to selfplay@1879996
+Continued scripted past the plateau to watch for a late climb. Deterministic scripted evals:
+1879996→0.083 (arms .12), 1967996→0.050 (arms .10), **2095996→0.000 (arms .00, hits .00,
+ALL 20 eps fully passive, ep_len 72)**. So the argmax policy COLLAPSED to doing nothing —
+the arms trend .12→.10→.00 is monotone to zero. Classic argmax mode-collapse: ROLLOUT
+(stochastic) still showed win ~0.10 / hits ~0.13 (exploration noise) the whole time, totally
+MASKING the deterministic collapse — exactly the trap from the pool-collapse (2026-06-14) and
+why we gate on DETERMINISTIC eval. Mechanism: full-strength scripted bot is unbeatable for
+this policy, so under the survival-weighted reward "do nothing / don't engage" is the locally
+optimal argmax action; PPO slid the greedy policy there over ~215k steps while ep_rew looked
+fine. REVERTED (this is the pre-stated revert trigger = clear deterministic arms→0): 
+- `touch run/USE_SELFPLAY`; restored `run/SELFPLAY_CKPT`→1759996; archived **27** collapsed
+  scripted ckpts (1887996..2103996) → `models/archive-scripted-collapse/`; latest is again the
+  pre-scripted **1879996**.
+- Full clean teardown (kill by PID — supervisor+subshell+watchdog+trainer, then fleet; no
+  pkill-self-match, no foreground sleep) + relaunch. LIVE-VERIFIED 19:18: opp_mode=selfplay,
+  resumed from 1879996, frozen opp 1759996 loaded, 2 bridges, supervisor+watchdog up.
+NET for the night: the scripted experiment ANSWERED its question — a fixed competent opponent
+does NOT break the plateau; at full strength it actively collapses the policy. Back on the
+stable selfplay state @1879996 (mirror ~0.10, harness even-baseline ~0.15), best policy
+preserved. **The bottleneck is confirmed REWARD/DIFFICULTY (user tuning domain): both
+self-play (stuck) and full-scripted (collapses) fail. Highest-leverage next (for the user):
+rebalance reward so passivity isn't safe (down-weight survival/armed-trickle/chip, up-weight
+terminal KILL) — that's the common root of BOTH the scripted collapse AND the self-play
+no-arm basin — and/or a *weakened* scripted bot (needs new C# AGGRO knob in the headless
+DriveScriptedBots) at HP100, gated by the corrected slot-swap eval.** Lesson reinforced: a
+fixed-but-too-hard opponent + survival reward is a passivity trap just like equal-weight FSP;
+gate on DETERMINISTIC eval (rollout masked a full collapse for ~120k steps here).
