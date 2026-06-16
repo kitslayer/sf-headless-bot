@@ -41,7 +41,7 @@ python/
 
 Orchestration: `scripts/fleet.sh start|stop|restart N` (writes `run/fleet.env`,
 the single source of truth the instances source), `scripts/watchdog.sh`
-(restarts dead/hung instances, desync jitter), `scripts/train_supervisor.sh`
+(restarts dead/hung instances, desync jitter, reaps orphan Xvfb), `scripts/train_supervisor.sh`
 (keeps the trainer alive, resumes from checkpoints, stall detection).
 
 ## Training pipeline (current)

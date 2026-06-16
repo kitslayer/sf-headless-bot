@@ -1188,3 +1188,24 @@ climbing); re-eval @2.05M; ramp AGGRO→0.6→0.8→1.0 once the learner DOMINAT
 then →HP100 →selfplay (gated by the corrected `--slot-swap` eval). If it stalls at -0.6, weaken to
 AGGRO~0.25-0.3 to let it master an easier rung first. The night's full chain — gate-bug fix →
 plateau diagnosis → 3 plateau-breakers → escape — is now empirically validated.
+
+## 2026-06-16 09:30 — double-instance hang root-caused: orphan Xvfb leak → watchdog now reaps them
+While babysitting AGGRO-0.6 toward the 2.25M gate, the watch flagged BOTH bridges
+DOWN at 09:26 (vs the usual single flap). Diagnosis: NOT a code crash —
+- Both StickFight procs alive + both ports listening; the games were HUNG (oracle1
+  plugin-log frozen, bridge no-reply). Watchdog correctly 2-struck both and restarted
+  (inst 0 @09:27:43, inst 1 @09:28:02); trainer froze at ts 2248700 during the double
+  restart, then RESUMED to 2249724 once bridges returned. No data loss.
+- **Root cause** (oracle1-combined.log): `XIO: fatal IO error 110 (Connection timed out)
+  on X server :189` — the instance's Xvfb display died, breaking the game's X conn and
+  triggering a ~100MB/min error-loop spew (the watchdog was truncating oracle1-plugin.log
+  every minute). WHY the Xvfb died: **leaked orphan Xvfb servers**. Found 6 stale Xvfb
+  (displays :132/:137/:143/:149/:161/:174, ages 1.5–6h, all reparented to ppid==1, none
+  used by a live game) — xvfb-run's SIGKILL teardown on each watchdog restart doesn't
+  reliably reap its Xvfb child, so they pile up (~570MB + fd pressure over 6h / 2559
+  restarts) and live X servers start timing out.
+- **Fix**: killed the 6 orphans by PID + cleaned their stale /tmp/.X*-lock; added a
+  periodic **orphan-Xvfb sweep** to watchdog.sh's main loop (each 60s cycle: kill any
+  Xvfb with ppid==1 — a live instance's Xvfb always has a live xvfb-run parent, so
+  ppid==1 is a definitive orphan; display-agnostic, no instance→display map needed).
+  Restarted the watchdog to load it. README watchdog note updated.

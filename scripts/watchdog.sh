@@ -82,6 +82,23 @@ while true; do
       echo "[watchdog $(date '+%H:%M:%S')] truncated $lf (was $((sz/1048576))MB)"
     fi
   done
+  # Orphan-Xvfb sweep (2026-06-16): each instance restart can LEAK an Xvfb —
+  # xvfb-run's SIGKILL teardown doesn't always reap its Xvfb child, which then
+  # reparents to init (ppid==1) and lingers holding an X server + RAM. Over a
+  # long run these pile up (6 stale servers / ~570MB observed after 6h, displays
+  # :132..:174) and the resulting fd/RAM pressure makes live X servers time out
+  # (XIO error 110) — which itself caused a double-instance hang. A live
+  # instance's Xvfb ALWAYS has a live xvfb-run parent, so ppid==1 is a definitive
+  # orphan; kill it and clean its stale lock. Display-agnostic, so it needs no
+  # instance→display map.
+  for xpid in $(pgrep -x Xvfb 2>/dev/null); do
+    [ "$(ps -o ppid= -p "$xpid" 2>/dev/null | tr -d ' ')" = "1" ] || continue
+    xdisp=$(ps -o args= -p "$xpid" 2>/dev/null | grep -oE ':[0-9]+' | head -1)
+    kill -9 "$xpid" 2>/dev/null && {
+      echo "[watchdog $(date '+%H:%M:%S')] reaped orphan Xvfb $xpid (disp ${xdisp:-?})"
+      [ -n "$xdisp" ] && rm -f "/tmp/.X${xdisp#:}-lock" "/tmp/.X11-unix/X${xdisp#:}" 2>/dev/null
+    }
+  done
   for i in $(seq 0 $((N-1))); do
     pidf="$PIDDIR/oracle${i}.pid"
     plog="$LOGS/oracle${i}-plugin.log"
