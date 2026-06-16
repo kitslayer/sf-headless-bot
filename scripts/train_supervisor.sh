@@ -35,7 +35,14 @@ else
   # AGGRO<1 fires/approaches less, AIM_NOISE>0 misses, REACTION>0 lags. fleet.sh
   # persists these into run/fleet.env so watchdog restarts keep them. Override by
   # exporting SFGYM_BOT_AGGRO / _AIM_NOISE / _REACTION before launching.
-  FLEET_BOT_DIFF="SFGYM_BOT_AGGRO=${SFGYM_BOT_AGGRO:-0.4} SFGYM_BOT_AIM_NOISE=${SFGYM_BOT_AIM_NOISE:-0.3} SFGYM_BOT_REACTION=${SFGYM_BOT_REACTION:-0.15}"
+  # Curriculum difficulty: AGGRO from run/BOT_AGGRO (default 0.4), ramped up as the
+  # learner masters each rung (greedy score→0+). At full strength (1.0) the aim/lag
+  # handicaps go to 0; below that keep moderate handicaps. Ramp = `echo 0.6 >
+  # run/BOT_AGGRO` + restart supervisor. (AGGRO0.4 MASTERED @ts2.05M: greedy win 0.45 /
+  # score +0.05 / arms 0.80 → ramped to 0.6 on 2026-06-16.)
+  _aggro=$(cat "$BOTDIR/run/BOT_AGGRO" 2>/dev/null || echo 0.4)
+  if [ "$_aggro" = "1.0" ] || [ "$_aggro" = "1" ]; then _aim=0; _react=0; else _aim=0.3; _react=0.15; fi
+  FLEET_BOT_DIFF="SFGYM_BOT_AGGRO=${SFGYM_BOT_AGGRO:-$_aggro} SFGYM_BOT_AIM_NOISE=${SFGYM_BOT_AIM_NOISE:-$_aim} SFGYM_BOT_REACTION=${SFGYM_BOT_REACTION:-$_react}"
 fi
 echo "[train-sup] start $(date) instances=$INSTANCES steps=$STEPS opp_mode=$OPP_MODE rl_slots=$FLEET_RL_SLOTS"
 
