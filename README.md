@@ -60,9 +60,14 @@ the single source of truth the instances source), `scripts/watchdog.sh`
    then `KickstartPPO` resumes with a decaying BC anchor + critic warmup.
    Recollect demos whenever the opponent stage changes.
 
-**Status (2026-06-15 20:25):** STAGE — **SCRIPTED vs a WEAKENED bot** (`opp_mode="scripted"`,
-`SFGYM_BOT_AGGRO=0.4 / AIM_NOISE=0.3 / REACTION=0.15`) + a REBALANCED reward, resumed from the
-clean best **1879996**, HP25/Ice11. The fix for the plateau both self-play and full-scripted hit
+**Status (2026-06-16 12:46):** STAGE — **SCRIPTED vs a WEAKENED bot** (`opp_mode="scripted"`,
+AGGRO ramped via `run/BOT_AGGRO`, currently **0.5** / `AIM_NOISE=0.3 / REACTION=0.15`) + a
+REBALANCED reward, ~2.29M steps. Curriculum so far: AGGRO **0.4 MASTERED** (greedy win 0.45 /
+score +0.05 / arms 0.80 @2.05M) → **0.6 PLATEAUED** (3 greedy evals over ~200k steps all flat at
+score ≈ -0.30, engagement drifting down) → **stepped DOWN to 0.5** (2026-06-16 12:46) as a smaller
+learnable rung. Mastery gate = greedy `score`→positive, then ramp 0.5→0.6→…→1.0 →HP100 →selfplay.
+(History note: earlier line below cites AGGRO=0.4 / resume 1879996 — superseded by this ramp.)
+HP25/Ice11. The fix for the plateau both self-play and full-scripted hit
 (full arc in `TRAINING_LOG.md` **2026-06-15 11:40 → 20:25**). Three changes shipped together:
 **(1) reward** — removed the farmable armed-trickle (it paid the agent to CAMP) + up-weighted the
 KILL to +2..3 so winning dominates the per-step terms (passivity no longer safe); **(2) a weakened
