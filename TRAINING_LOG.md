@@ -1172,3 +1172,19 @@ run/USE_SELFPLAY` + restart. NEXT: babysit; eval vs the weakened bot (`run_eval.
 (curriculum) then →HP100 →selfplay; if it collapses again, the reward needs more work. Once a
 candidate clearly beats the frozen selfplay opp on the corrected `--slot-swap` gate (score>0),
 resume the selfplay ladder with the fixed gate.
+
+## 2026-06-16 00:21 — PLATEAU-BREAKERS WORK: greedy policy escaped passivity (arms 0.55, win 0.15 vs weakened bot)
+Restart note: the whole stack got killed ~00:0x (system event — was healthy at win 0.22/ts 1944956);
+cleaned orphan launch_oracle/xvfb-run wrappers + relaunched supervisor+watchdog, resumed latest
+(1943996, win 0.22 intact). Then the first DETERMINISTIC eval of the new config (1943996 vs the
+WEAKENED bot @AGGRO0.4): **win 0.15 (3/20), arms 0.55, hits 0.40, fell 0.15, score -0.60 (opp_died
+0.20 / self_died 0.80), len 116.** vs full-strength scripted's COLLAPSE (0.00 win / 0.00 arms) this
+is a decisive turnaround: the new reward (no camping-trickle + KILL→+2..3) + a BEATABLE opponent
+broke the passivity/no-arm basin — the GREEDY policy now arms ~every other episode (0.55 vs the
+basin's 0.05) and wins 15%. Rollout win climbed 0.11→0.22 over ~60k steps, falls 0.22→0.05.
+`score -0.60` = AGGRO0.4 still wins the matchup ~80/20, so it's a LEARNABLE, not-yet-mastered rung.
+(end-HP-diff -399 = overkill artifact; ignore, use SCORE.) PLAN: keep training @AGGRO0.4 (still
+climbing); re-eval @2.05M; ramp AGGRO→0.6→0.8→1.0 once the learner DOMINATES (score→0+ / win up),
+then →HP100 →selfplay (gated by the corrected `--slot-swap` eval). If it stalls at -0.6, weaken to
+AGGRO~0.25-0.3 to let it master an easier rung first. The night's full chain — gate-bug fix →
+plateau diagnosis → 3 plateau-breakers → escape — is now empirically validated.
