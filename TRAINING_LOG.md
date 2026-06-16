@@ -1225,3 +1225,15 @@ still ≤ -0.25 (no improvement over ~400k steps at 0.6), step AGGRO DOWN to 0.5
 jump was flagged too big — 0.5 is a smoother learnable frontier). If score climbs toward 0,
 hold 0.6 → ramp 0.7. (Eval cleaned up fine; the double-instance hang earlier today was the
 orphan-Xvfb leak, now fixed in watchdog — commit 514820c.)
+
+## 2026-06-16 12:11 — session-drop SIGHUP killed managers; recovered + hardened with setsid
+Miles' internet dropped (~10:07–12:11). The disconnect SIGHUP'd the supervisor + watchdog
+(both nohup'd but still in the session's process group), the fleet died with them, and the
+trainer wedged on dead SubprocVecEnv workers — ~2h wall-clock lost (ts stuck ~2272252), but
+NO checkpoint loss (latest = 2271996). Recovery: fleet.sh stop + killed wedged trainer/games
+by EXPLICIT PID (the pkill -f StickFight.exe / train_headless_ppo.py self-match trap bit twice
+— the pattern is in pkill's own cmdline; use pgrep→kill PID or a [.]-bracket regex). Relaunched
+BOTH managers under **setsid** (own session+pgid, sid==pid verified) so a future session drop
+can't SIGHUP them. Config intact across the bounce: scripted stage (no run/USE_SELFPLAY),
+AGGRO=0.6, HP25, RL_SLOTS=0. Plateau trigger from 09:40 still stands (re-eval @2.45M; step
+AGGRO→0.5 if greedy score still ≤ -0.25). The orphan-Xvfb watchdog sweep (514820c) survived.
