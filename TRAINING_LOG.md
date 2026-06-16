@@ -1209,3 +1209,19 @@ DOWN at 09:26 (vs the usual single flap). Diagnosis: NOT a code crash —
   Xvfb with ppid==1 — a live instance's Xvfb always has a live xvfb-run parent, so
   ppid==1 is a definitive orphan; display-agnostic, no instance→display map needed).
   Restarted the watchdog to load it. README watchdog note updated.
+
+## 2026-06-16 09:40 — AGGRO-0.6 gate @2.25M: NOT mastered, keep training (plateau trigger armed)
+Deterministic greedy scripted eval, ckpt 2247996, 20 eps vs the AGGRO-0.6 weakened bot
+(AGGRO=0.6 / AIM_NOISE=0.3 / REACTION=0.15 / HP25):
+  WIN 0.300 (6/20) | score -0.300 (opp_died 0.40 - self_died 0.70) | fell 0.300 | arms 0.60 | hits 0.60 | endHPdiff -344
+Flat vs the 08:04 number (win 0.30 / score -0.30) → score still negative ⇒ NOT mastered, do
+NOT ramp to 0.7. The policy IS fighting (arms 0.60, hits 0.60, up from the AGGRO-0.4 era's
+0.55/0.40) — the drag is FALLS (0.30 of greedy eps walk off the map; the fall penalty is
+capped, backfired twice when raised, so this must come from the policy learning map awareness).
+Rollout win climbing (0.11→0.22) while greedy flat = the known "rollout masks deterministic"
+pattern — mild plateau warning but the 0.6 rung is only ~200k steps old (0.4 took ~170k to
+master), so KEEP TRAINING at 0.6. **Plateau trigger ARMED**: re-eval @2.45M; if greedy score
+still ≤ -0.25 (no improvement over ~400k steps at 0.6), step AGGRO DOWN to 0.5 (the 0.4→0.6
+jump was flagged too big — 0.5 is a smoother learnable frontier). If score climbs toward 0,
+hold 0.6 → ramp 0.7. (Eval cleaned up fine; the double-instance hang earlier today was the
+orphan-Xvfb leak, now fixed in watchdog — commit 514820c.)
