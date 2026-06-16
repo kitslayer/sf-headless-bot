@@ -57,6 +57,19 @@ restart_one() {
   local pidf="$PIDDIR/oracle${i}.pid"
   [ -f "$pidf" ] && pkill -9 -P "$(cat "$pidf" 2>/dev/null)" 2>/dev/null
   pkill -9 -f "oracle${i}-unity[.]log" 2>/dev/null
+  # Reap the wineserver bound to THIS instance's wineprefix. The logFile match
+  # above catches StickFight.exe + the wine chain, but a bare `wineserver` has
+  # NO logFile in its cmdline, so it survives every restart, keeps the prefix
+  # locked, and crashes the next launch into it ("process dead") — a self-
+  # sustaining restart THRASH that leaked 20 wineservers and starved the trainer
+  # (2026-06-16: ~38 min of both-instance flapping, ts frozen, until cleaned by
+  # hand). Match by the instance's prefix path (sf-bot-prefixes/<i>/) in the
+  # wineserver's /proc environ (WINEPREFIX / STEAM_COMPAT_DATA_PATH).
+  for wpid in $(pgrep -x wineserver 2>/dev/null); do
+    if tr '\0' '\n' < "/proc/$wpid/environ" 2>/dev/null | grep -q "sf-bot-prefixes/${i}/"; then
+      kill -9 "$wpid" 2>/dev/null
+    fi
+  done
   # Desync jitter (2026-06-10): instances restarted in the same batch come
   # up phase-LOCKED (identical map + same boot time → same round/scene
   # cycle) and then hit the same hang-prone transition SIMULTANEOUSLY —

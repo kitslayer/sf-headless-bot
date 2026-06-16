@@ -1255,3 +1255,24 @@ run/BOT_AGGRO` + restart. New gate: re-eval @~2.40M; mastery = greedy score → 
 ramp 0.5 → 0.6 (which should now be easier). If 0.5 ALSO plateaus negative, the bottleneck is
 FALLS (capped penalty) not difficulty → flag for a reward/obs rethink (user domain).
 Handicaps at 0.5: AIM_NOISE=0.3, REACTION=0.15 (same as 0.6; zero only at AGGRO 1.0).
+
+## 2026-06-16 16:22 — ROOT-CAUSED the restart thrash: leaked wineservers; watchdog now reaps them
+After the AGGRO 0.6→0.5 step-down, training was stable for hours, then ~15:34 fell into a
+SELF-SUSTAINING restart thrash: both instances flapping every ~1-2 min, ts frozen ~2391-2394k,
+fps→5, wd_restarts climbing fast. Ruled out: host contention (load 3.9, 0% iowait, no active
+ffmpeg, /dev/shm 1%, no OOM, no fd/IPC exhaustion), accumulated state (a clean fleet bounce
+recurred in 5 min), fast-rounds (fresh instances do normal ~50s rounds), soft-hang (bridges
+gave NO ping reply = hard hang, watchdog-visible).
+**ROOT CAUSE: leaked wineservers.** Found 20 wineserver procs for 2 instances (+ 44 stale
+/tmp/.X*-locks). The watchdog's `restart_one` kills the game by its `-logFile oracleN-unity.log`
+pattern, but a bare `wineserver` has NO logFile in its cmdline → it SURVIVES every restart,
+keeps the instance's wineprefix locked, and crashes the next launch into that prefix
+("process dead") → watchdog restarts → another orphan wineserver → vicious cycle. A single
+`fleet.sh stop` clears them but they re-accumulate.
+**FIX (committed):** (1) immediate — killed all 20 wineservers + wine chain + 43 stale X-locks
+by hand, full clean bounce. (2) durable — `restart_one` now reaps the wineserver bound to the
+instance's prefix (matches `sf-bot-prefixes/<i>/` in the wineserver's /proc environ) before
+relaunching, so the prefix is free for the new game. Resumed from latest checkpoint at AGGRO-0.5.
+Note: a 2nd internet drop hit during this — the setsid-detached managers SURVIVED it (the
+12:11 hardening worked). Plateau trigger from 12:46 still stands: re-eval @~2.40M, ramp 0.5→0.6
+if greedy score→positive.
