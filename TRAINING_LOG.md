@@ -1237,3 +1237,21 @@ BOTH managers under **setsid** (own session+pgid, sid==pid verified) so a future
 can't SIGHUP them. Config intact across the bounce: scripted stage (no run/USE_SELFPLAY),
 AGGRO=0.6, HP25, RL_SLOTS=0. Plateau trigger from 09:40 still stands (re-eval @2.45M; step
 AGGRO→0.5 if greedy score still ≤ -0.25). The orphan-Xvfb watchdog sweep (514820c) survived.
+
+## 2026-06-16 12:46 — AGGRO 0.6 → 0.5 (confirmed plateau, acted early on the armed trigger)
+THREE greedy scripted evals at AGGRO-0.6 over ~200k steps all flat at score ≈ -0.30:
+  08:04 (-0.30) · 2.25M/2247996 (win 0.30, score -0.30, arms 0.60, hits 0.60, fell 0.30)
+  · 2.28M/2279996 interim (win 0.19, score -0.31, arms 0.44, hits 0.38, fell 0.375)
+Score rock-flat at -0.30 with engagement noisy-to-declining (arms 0.60→0.44) and falls up
+(0.30→0.375) = a CONFIRMED plateau tipping toward passivity drift, NOT single-eval noise.
+The armed trigger (score ≤ -0.25 @ re-eval) was met, so rather than burn ~170k more steps to
+2.45M on a flat rung (risking the passivity trap deepening — historically hard to reverse), I
+stepped the curriculum DOWN a rung: **AGGRO 0.6 → 0.5** (`echo 0.5 > run/BOT_AGGRO` + clean
+supervisor/fleet bounce). 0.5 sits between the MASTERED 0.4 (score +0.05) and the stuck 0.6 — a
+smaller, learnable frontier per the "use smaller ramp steps" guidance. Weaker opp ⇒ more
+winnable fights ⇒ should pull engagement back up and counter the drift. Resumed from latest
+checkpoint (~2287996), no progress lost (0.6 was flat anyway). REVERSIBLE: `echo 0.6 >
+run/BOT_AGGRO` + restart. New gate: re-eval @~2.40M; mastery = greedy score → positive, then
+ramp 0.5 → 0.6 (which should now be easier). If 0.5 ALSO plateaus negative, the bottleneck is
+FALLS (capped penalty) not difficulty → flag for a reward/obs rethink (user domain).
+Handicaps at 0.5: AIM_NOISE=0.3, REACTION=0.15 (same as 0.6; zero only at AGGRO 1.0).
